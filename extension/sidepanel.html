@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Briefly</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&family=Inter:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ══ HEADER ══ -->
+  <header class="app-header">
+    <div class="logo">
+      <span class="logo-mark">⬡</span>
+      <span class="logo-text">Briefly<em>AI</em></span>
+    </div>
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-tab="application">Apply</button>
+      <button class="tab-btn" data-tab="profile">Profile</button>
+      <button class="tab-btn" data-tab="settings">Settings</button>
+      <button class="tab-btn" data-tab="storage">Storage</button>
+    </nav>
+  </header>
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       TAB: APPLICATION
+  ══════════════════════════════════════════════════════════════════════ -->
+  <section id="tab-application" class="tab-content active">
+
+    <!-- JD Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Job Description</h2>
+        <div class="row-gap">
+          <button id="btn-rescan" class="btn btn-ghost btn-sm">↻ Re-scan</button>
+          <button id="btn-clear-jd" class="btn btn-ghost btn-sm danger">✕ Clear</button>
+        </div>
+      </div>
+      <div id="jd-status" class="jd-status empty">
+        <span class="status-dot"></span>
+        <span id="jd-status-text">No JD loaded</span>
+      </div>
+      <div id="jd-preview" class="jd-preview hidden"></div>
+    </div>
+
+    <!-- Generate Documents -->
+    <div class="panel">
+      <div class="panel-header"><h2>Documents</h2></div>
+      <div class="btn-group">
+        <button id="btn-gen-resume" class="btn btn-primary">⬡ Resume</button>
+        <button id="btn-gen-cover"  class="btn btn-secondary">✉ Cover Letter</button>
+      </div>
+      <!-- Resume output -->
+      <div id="resume-output" class="output-block hidden">
+        <div class="output-header">
+          <span class="output-label mono">resume.tex</span>
+          <div class="row-gap">
+            <button class="btn-copy" data-target="resume-code">⧉ Copy</button>
+            <button id="btn-dl-resume" class="btn btn-ghost btn-sm">⬇ PDF</button>
+          </div>
+        </div>
+        <pre id="resume-code" class="code-block"></pre>
+      </div>
+      <!-- Cover output -->
+      <div id="cover-output" class="output-block hidden">
+        <div class="output-header">
+          <span class="output-label mono">cover.tex</span>
+          <div class="row-gap">
+            <button class="btn-copy" data-target="cover-code">⧉ Copy</button>
+            <button id="btn-dl-cover" class="btn btn-ghost btn-sm">⬇ PDF</button>
+          </div>
+        </div>
+        <pre id="cover-code" class="code-block"></pre>
+      </div>
+    </div>
+
+    <!-- Experience Refinement -->
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Tailored Bullets</h2>
+        <button id="btn-refine" class="btn btn-ghost btn-sm">↻ Tailor to JD</button>
+      </div>
+      <p id="refine-hint" class="hint-text">Re-scan a JD to auto-tailor bullets, or click manually.</p>
+      <div id="refined-experience"></div>
+    </div>
+
+    <!-- Q&A Chat -->
+    <div class="panel chat-panel">
+      <div class="panel-header">
+        <h2>Quick Q&amp;A <span class="badge">Gemini</span></h2>
+        <label class="toggle-label">
+          <input type="checkbox" id="detailed-toggle" />
+          <span class="toggle-track"></span>
+          <span class="toggle-text">Detailed</span>
+        </label>
+      </div>
+      <div id="chat-messages" class="chat-messages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="chat-input" class="input" placeholder="Ask anything about this role…" />
+        <button id="btn-send" class="btn btn-primary btn-sm">↑</button>
+      </div>
+    </div>
+
+    <!-- Track Application -->
+    <div class="panel">
+      <div class="panel-header"><h2>Track Application</h2></div>
+      <div class="apply-form">
+        <div class="row-gap">
+          <input type="text" id="apply-company" class="input" placeholder="Company" />
+          <input type="text" id="apply-role"    class="input" placeholder="Role" />
+        </div>
+        <select id="apply-status" class="input select">
+          <option value="Applied">Applied</option>
+          <option value="OA">OA</option>
+          <option value="Interview">Interview</option>
+          <option value="Rejected">Rejected</option>
+          <option value="Offer">Offer</option>
+        </select>
+        <input type="text" id="apply-notes" class="input" placeholder="Notes (optional)" />
+        <button id="btn-log" class="btn btn-accent">✓ Log Application</button>
+      </div>
+      <div id="apply-feedback" class="feedback hidden"></div>
+    </div>
+
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       TAB: PROFILE
+  ══════════════════════════════════════════════════════════════════════ -->
+  <section id="tab-profile" class="tab-content">
+
+    <!-- Resume Upload / Parser -->
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Import from Resume</h2>
+        <span class="badge">Gemini</span>
+      </div>
+      <p class="hint-text">Upload a PDF or TXT resume to auto-fill your profile.</p>
+      <label class="file-upload-label" id="resume-upload-label">
+        <input type="file" id="resume-upload" accept=".pdf,.txt" />
+        <span class="file-upload-icon">⬆</span>
+        <span id="resume-upload-name">Choose PDF or TXT…</span>
+      </label>
+      <button id="btn-parse-resume" class="btn btn-secondary" disabled>⬡ Parse &amp; Auto-fill Profile</button>
+      <div id="parse-feedback" class="feedback hidden"></div>
+    </div>
+
+    <!-- Profile modules (dynamically rendered) -->
+    <div id="profile-modules" class="profile-modules"></div>
+
+    <div class="panel">
+      <button id="btn-save-profile" class="btn btn-primary w-full">Save Profile</button>
+    </div>
+
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       TAB: SETTINGS
+  ══════════════════════════════════════════════════════════════════════ -->
+  <section id="tab-settings" class="tab-content">
+    <div class="panel">
+      <h3 class="section-title">API Keys</h3>
+      <div class="form-group">
+        <label>OpenRouter API Key</label>
+        <input type="password" id="s-or-key"   class="input" placeholder="sk-or-…" />
+      </div>
+      <div class="form-group">
+        <label>OpenRouter Model</label>
+        <input type="text"     id="s-or-model" class="input" placeholder="anthropic/claude-3.5-sonnet" />
+      </div>
+      <div class="form-group">
+        <label>Gemini API Key</label>
+        <input type="password" id="s-gem-key"  class="input" placeholder="AIza…" />
+      </div>
+      <div class="form-group">
+        <label>Google Script Web App URL</label>
+        <input type="url"      id="s-sheets"   class="input" placeholder="https://script.google.com/…" />
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3 class="section-title">LaTeX Templates</h3>
+
+      <div class="form-group">
+        <label>Resume Template <span class="label-hint">(.tex)</span></label>
+        <label class="file-upload-label" id="resume-tpl-label">
+          <input type="file" id="resume-tpl-upload" accept=".tex" />
+          <span class="file-upload-icon">⬆</span>
+          <span id="resume-tpl-name">Upload .tex file…</span>
+        </label>
+        <div id="resume-tpl-preview" class="tpl-preview hidden">
+          <span id="resume-tpl-loaded" class="tpl-loaded-name"></span>
+          <button class="btn-clear-tpl" data-tpl="resumeTemplate">✕</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Cover Letter Template <span class="label-hint">(.tex)</span></label>
+        <label class="file-upload-label" id="cover-tpl-label">
+          <input type="file" id="cover-tpl-upload" accept=".tex" />
+          <span class="file-upload-icon">⬆</span>
+          <span id="cover-tpl-name">Upload .tex file…</span>
+        </label>
+        <div id="cover-tpl-preview" class="tpl-preview hidden">
+          <span id="cover-tpl-loaded" class="tpl-loaded-name"></span>
+          <button class="btn-clear-tpl" data-tpl="coverTemplate">✕</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <button id="btn-save-settings" class="btn btn-primary w-full">Save Settings</button>
+      <div id="settings-feedback" class="feedback hidden"></div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       TAB: STORAGE EXPLORER
+  ══════════════════════════════════════════════════════════════════════ -->
+  <section id="tab-storage" class="tab-content">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Storage Explorer</h2>
+        <div class="row-gap">
+          <button id="btn-refresh-storage" class="btn btn-ghost btn-sm">↻ Refresh</button>
+          <button id="btn-clear-all-storage" class="btn btn-ghost btn-sm danger">✕ Clear All</button>
+        </div>
+      </div>
+      <p class="hint-text">All keys in <code>chrome.storage.local</code>.</p>
+      <div id="storage-list" class="storage-list"></div>
+    </div>
+  </section>
+
+</div><!-- #app -->
+<script src="sidepanel.js"></script>
+</body>
+</html>
