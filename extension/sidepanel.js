@@ -1,7 +1,7 @@
 'use strict';
-// sidepanel.js — Briefly V2
+// sidepanel.js — Briefly V2.1
 
-// ─── Data Schema ──────────────────────────────────────────────────────────────
+// ─── Profile Schema ───────────────────────────────────────────────────────────
 const DEFAULT_PROFILE = {
   personal: { name:'', email:'', phone:'', location:'', linkedin:'', github:'', website:'' },
   modules: {
@@ -9,10 +9,19 @@ const DEFAULT_PROFILE = {
     workExperience: [],
     projects:       [],
     achievements:   [],
+    skills:         { languages: [], frameworks: [], tools: [] },
     courses:        [],
   }
 };
 
+// Skill sub-categories (drives the Skills module UI)
+const SKILL_GROUPS = [
+  { key: 'languages',  label: 'Languages'  },
+  { key: 'frameworks', label: 'Frameworks & Libraries' },
+  { key: 'tools',      label: 'Tools & Platforms' },
+];
+
+// Array-based modules rendered dynamically
 const MODULE_CONFIG = [
   {
     key: 'education', label: 'Education', icon: '🎓',
@@ -31,9 +40,9 @@ const MODULE_CONFIG = [
     fields: [
       { key:'company',   placeholder:'Acme Corp' },
       { key:'title',     placeholder:'Software Engineer' },
-      { key:'location',  placeholder:'Remote / Sydney, AU', half:true },
-      { key:'startDate', placeholder:'Jan 2023', half:true },
-      { key:'endDate',   placeholder:'Present',  half:true },
+      { key:'location',  placeholder:'Remote / Sydney', half:true },
+      { key:'startDate', placeholder:'Jan 2023',        half:true },
+      { key:'endDate',   placeholder:'Present',         half:true },
     ],
     bullets: true,
   },
@@ -49,7 +58,7 @@ const MODULE_CONFIG = [
   {
     key: 'achievements', label: 'Achievements', icon: '🏆',
     fields: [
-      { key:'title',       placeholder:"Dean's List / Hackathon Winner" },
+      { key:'name',        placeholder:"Dean's List / Hackathon Winner" },
       { key:'date',        placeholder:'2023', half:true },
       { key:'description', placeholder:'Brief details…' },
     ],
@@ -58,10 +67,10 @@ const MODULE_CONFIG = [
   {
     key: 'courses', label: 'Courses & Training', icon: '📚',
     fields: [
-      { key:'name',     placeholder:'Machine Learning Specialization' },
-      { key:'provider', placeholder:'Coursera / Udemy', half:true },
-      { key:'date',     placeholder:'2023',             half:true },
-      { key:'grade',    placeholder:'Pass / 95%',       half:true },
+      { key:'name',        placeholder:'Machine Learning Specialization' },
+      { key:'institution', placeholder:'Coursera / Udemy', half:true },
+      { key:'date',        placeholder:'2023',             half:true },
+      { key:'level',       placeholder:'Beginner / Pro',   half:true },
     ],
     bullets: false,
   },
@@ -69,15 +78,15 @@ const MODULE_CONFIG = [
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const state = {
-  profile:      structuredClone(DEFAULT_PROFILE),
-  settings:     {},
-  jd:           null,
-  chatHistory:  [],
-  detailedMode: false,
+  profile:     structuredClone(DEFAULT_PROFILE),
+  settings:    {},
+  jd:          null,
+  chatHistory: [],
+  detailedMode:false,
   parsedResumeText: null,
 };
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
+// ─── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   await loadStorage();
   renderProfileModules();
@@ -105,7 +114,7 @@ function bindTabNav() {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
       btn.classList.add('active');
-      document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+      el(`tab-${btn.dataset.tab}`).classList.add('active');
       if (btn.dataset.tab === 'storage') refreshStorageExplorer();
     });
   });
@@ -115,24 +124,26 @@ function bindTabNav() {
 function bindApplicationTab() {
   el('btn-rescan').addEventListener('click', handleRescan);
   el('btn-clear-jd').addEventListener('click', async () => {
-    await sendMsg({ type: 'CLEAR_JD' });
+    await sendMsg({ type:'CLEAR_JD' });
     state.jd = null;
     refreshJDStatus();
+    clearAnalysisPanel();
   });
 
   el('btn-gen-resume').addEventListener('click', () => generateDoc('resume'));
   el('btn-gen-cover').addEventListener('click',  () => generateDoc('cover'));
   el('btn-dl-resume').addEventListener('click',  () => compileAndDownload('resume'));
   el('btn-dl-cover').addEventListener('click',   () => compileAndDownload('cover'));
-  el('btn-refine').addEventListener('click', () => runRefineExperience());
 
   el('btn-send').addEventListener('click', sendChat);
-  el('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }});
+  el('chat-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  });
   el('detailed-toggle').addEventListener('change', e => { state.detailedMode = e.target.checked; });
 
   el('btn-log').addEventListener('click', logApplication);
 
-  // Copy buttons (delegated)
+  // Delegated copy buttons
   document.addEventListener('click', e => {
     const btn = e.target.closest('.btn-copy');
     if (!btn) return;
@@ -145,51 +156,116 @@ function bindApplicationTab() {
   });
 }
 
-// ── Re-scan: scrape → extract meta → auto-fill tracker → auto-refine ──────────
+// ── Re-scan ────────────────────────────────────────────────────────────────────
+// 1. Scrape page text
+// 2. Extract company/role/skills/role-descriptions via Gemini (with profile)
+// 3. Auto-fill tracker + render JD analysis panel
 async function handleRescan() {
   const btn = el('btn-rescan');
   setBtnLoading(btn, true, '⏳ Scanning…');
+  clearAnalysisPanel();
+
   try {
-    const res = await sendMsg({ type: 'SCRAPE_JD' });
-    if (!res.success) return showToast(res.error, 'error');
-    state.jd = res.jd;
+    // Step 1 — scrape
+    const scrapeRes = await sendMsg({ type: 'SCRAPE_JD' });
+    if (!scrapeRes.success) { showToast(scrapeRes.error, 'error'); return; }
+    state.jd = scrapeRes.jd;
     refreshJDStatus();
 
-    // Auto-extract company + role
-    if (state.settings.geminiKey && state.jd.text) {
-      const meta = await sendMsg({ type: 'EXTRACT_JD_META', jd: state.jd.text });
-      if (meta.success) {
-        if (meta.company) el('apply-company').value = meta.company;
-        if (meta.role)    el('apply-role').value    = meta.role;
-      }
+    // Step 2 — extract meta (needs gemini key)
+    if (!state.settings.geminiKey) {
+      showToast('Add a Gemini API key in Settings to enable JD analysis.', 'error');
+      return;
     }
 
-    // Auto-trigger refine (non-blocking, no button loading)
-    const workExp = state.profile.modules.workExperience;
-    if (workExp.length && state.settings.openRouterKey) {
-      runRefineExperience(); // fire and forget
-    }
+    setBtnLoading(btn, true, '⏳ Analysing…');
+    const metaRes = await sendMsg({
+      type:    'EXTRACT_JD_META',
+      jd:      state.jd.text,
+      profile: state.profile,      // pass full profile
+    });
+
+    if (!metaRes.success) { showToast(metaRes.error, 'error'); return; }
+
+    // Step 3 — populate tracker inputs
+    if (metaRes.company) el('apply-company').value = metaRes.company;
+    if (metaRes.role)    el('apply-role').value    = metaRes.role;
+
+    // Step 4 — render analysis panel
+    renderAnalysisPanel(metaRes);
+
   } catch (e) { showToast(e.message, 'error'); }
+
   setBtnLoading(btn, false, '↻ Re-scan');
+}
+
+// ── JD Analysis Panel ──────────────────────────────────────────────────────────
+function renderAnalysisPanel(meta) {
+  // Skill pills — exact (green)
+  const exactContainer = el('skills-exact');
+  exactContainer.innerHTML = '';
+  (meta.skillsExactMatch || []).forEach(skill => {
+    const pill = document.createElement('span');
+    pill.className = 'pill pill-green';
+    pill.textContent = skill;
+    exactContainer.appendChild(pill);
+  });
+
+  // Skill pills — close (amber)
+  const closeContainer = el('skills-close');
+  closeContainer.innerHTML = '';
+  (meta.skillsCloseMatch || []).forEach(skill => {
+    const span = document.createElement('span');
+    span.className = 'pill pill-amber';
+    span.textContent = skill;
+    closeContainer.appendChild(span);
+  });
+
+  // Role descriptions
+  const roleContainer = el('role-descriptions');
+  roleContainer.innerHTML = '';
+  const descriptions = meta.workExRoleDescriptions || {};
+  const entries = Object.entries(descriptions);
+  el('role-desc-section').classList.toggle('hidden', entries.length === 0);
+  entries.forEach(([roleKey, desc]) => {
+    const card = document.createElement('div');
+    card.className = 'role-desc-card';
+    card.innerHTML = `
+      <div class="role-desc-card-title">${escHtml(roleKey)}</div>
+      <div class="role-desc-card-body">${escHtml(desc)}</div>`;
+    roleContainer.appendChild(card);
+  });
+
+  // Show the panel
+  el('jd-analysis').classList.remove('hidden');
+}
+
+function clearAnalysisPanel() {
+  el('jd-analysis').classList.add('hidden');
+  el('skills-exact').innerHTML   = '';
+  el('skills-close').innerHTML   = '';
+  el('role-descriptions').innerHTML = '';
 }
 
 // ── Document Generation ────────────────────────────────────────────────────────
 async function generateDoc(type) {
   if (!state.jd) return showToast('Please scan a JD first.');
-  const btnId  = type === 'resume' ? 'btn-gen-resume' : 'btn-gen-cover';
-  const outId  = type === 'resume' ? 'resume-output'  : 'cover-output';
-  const codeId = type === 'resume' ? 'resume-code'    : 'cover-code';
-  const msgType = type === 'resume' ? 'GENERATE_RESUME' : 'GENERATE_COVER';
-  const label   = type === 'resume' ? '⬡ Resume' : '✉ Cover Letter';
+  const isResume  = type === 'resume';
+  const btnId     = isResume ? 'btn-gen-resume' : 'btn-gen-cover';
+  const outId     = isResume ? 'resume-output'  : 'cover-output';
+  const codeId    = isResume ? 'resume-code'    : 'cover-code';
+  const msgType   = isResume ? 'GENERATE_RESUME' : 'GENERATE_COVER';
+  const label     = isResume ? '⬡ Resume'        : '✉ Cover Letter';
+  const tplKey    = isResume ? 'resumeTemplate'   : 'coverTemplate';
 
   const btn = el(btnId);
   setBtnLoading(btn, true, '⏳ Generating…');
   try {
     const res = await sendMsg({
       type: msgType,
-      profile: state.profile,
-      jd: state.jd.text,
-      latexTemplate: type === 'resume' ? state.settings.resumeTemplate : state.settings.coverTemplate,
+      profile:       state.profile,
+      jd:            state.jd.text,
+      latexTemplate: state.settings[tplKey] || '',
     });
     if (res.success) {
       el(codeId).textContent = res.latex;
@@ -201,7 +277,7 @@ async function generateDoc(type) {
   setBtnLoading(btn, false, label);
 }
 
-// ── Compile & Download PDF ─────────────────────────────────────────────────────
+// ── Compile & Download ─────────────────────────────────────────────────────────
 async function compileAndDownload(type) {
   const codeId = type === 'resume' ? 'resume-code' : 'cover-code';
   const btnId  = type === 'resume' ? 'btn-dl-resume' : 'btn-dl-cover';
@@ -211,62 +287,17 @@ async function compileAndDownload(type) {
   const btn = el(btnId);
   setBtnLoading(btn, true, '⏳ Compiling…');
   try {
-    const profile  = state.profile;
-    const name     = (profile.personal.name || 'Name').replace(/\s+/g, '_');
-    const company  = el('apply-company')?.value?.trim().replace(/\s+/g, '_') || 'Company';
-    const role     = el('apply-role')?.value?.trim().replace(/\s+/g, '_') || 'Role';
-    const docType  = type === 'resume' ? 'Resume' : 'CoverLetter';
+    const name    = (state.profile.personal.name || 'Resume').replace(/\s+/g, '_');
+    const company = (el('apply-company')?.value || 'Company').trim().replace(/\s+/g, '_');
+    const role    = (el('apply-role')?.value    || 'Role').trim().replace(/\s+/g, '_');
+    const docType = type === 'resume' ? 'Resume' : 'CoverLetter';
     const filename = `${name}_${docType}_${company}_${role}`;
 
-    const res = await sendMsg({ type: 'COMPILE_AND_SAVE', latex, filename });
-    if (res.success) {
-      showToast(`✓ Saved as ${res.filename}.pdf`, 'success');
-    } else {
-      showToast(res.error, 'error');
-    }
-  } catch (e) { showToast(e.message, 'error'); }
-  setBtnLoading(btn, false, '⬇ PDF');
-}
-
-// ── Experience Refinement ──────────────────────────────────────────────────────
-async function runRefineExperience() {
-  if (!state.jd) return;
-  const workExp = state.profile.modules.workExperience;
-  if (!workExp.length) return;
-
-  const btn = el('btn-refine');
-  setBtnLoading(btn, true, '⏳ Tailoring…');
-  el('refine-hint').classList.add('hidden');
-  try {
-    const res = await sendMsg({ type: 'REFINE_EXPERIENCE', workExperience: workExp, jd: state.jd.text });
-    if (res.success) renderRefinedExperience(res.refined);
+    const res = await sendMsg({ type:'COMPILE_AND_SAVE', latex, filename });
+    if (res.success) showToast(`✓ Saved ${res.filename}.pdf`, 'success');
     else showToast(res.error, 'error');
   } catch (e) { showToast(e.message, 'error'); }
-  setBtnLoading(btn, false, '↻ Tailor to JD');
-}
-
-function renderRefinedExperience(entries) {
-  const container = el('refined-experience');
-  container.innerHTML = '';
-  entries.forEach((exp, idx) => {
-    const blockId = `rf-${idx}`;
-    const bulletsHtml = (exp.bullets || []).map(b => `<div class="exp-bullet">${escHtml(b)}</div>`).join('');
-    const div = document.createElement('div');
-    div.className = 'exp-block';
-    div.innerHTML = `
-      <div class="exp-block-header">
-        <div>
-          <div class="exp-title">${escHtml(exp.title||'')} @ ${escHtml(exp.company||'')}</div>
-          <div class="exp-company">${escHtml(exp.startDate||'')}${exp.endDate ? ' – '+escHtml(exp.endDate) : ''}</div>
-        </div>
-        <div class="row-gap">
-          <button class="btn-copy" data-target="${blockId}-hidden">⧉ Copy</button>
-        </div>
-      </div>
-      <div class="exp-bullets">${bulletsHtml}</div>
-      <pre id="${blockId}-hidden" style="display:none">${(exp.bullets||[]).map(b=>'• '+b).join('\n')}</pre>`;
-    container.appendChild(div);
-  });
+  setBtnLoading(btn, false, '⬇ PDF');
 }
 
 // ── Chat ────────────────────────────────────────────────────────────────────────
@@ -287,23 +318,21 @@ async function sendChat() {
     removeBubble(typingId);
     const answer = res.success ? res.answer : '⚠ ' + res.error;
     if (res.success) {
-      state.chatHistory.push({ role:'user', content:q });
-      state.chatHistory.push({ role:'assistant', content:answer });
+      state.chatHistory.push({ role:'user', content:q }, { role:'assistant', content:answer });
       if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
     }
     appendBubble('ai', answer, true);
-  } catch(e) { removeBubble(typingId); appendBubble('ai', '⚠ '+e.message, false); }
+  } catch(e) { removeBubble(typingId); appendBubble('ai', '⚠ ' + e.message); }
 }
 
 function appendBubble(role, text, withCopy = false) {
   const container = el('chat-messages');
-  const id = `bubble-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+  const id  = `bubble-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
   const div = document.createElement('div');
   div.className = `chat-msg chat-msg-${role}`;
   div.id = id;
   const copyRow = (withCopy && role === 'ai')
-    ? `<div class="msg-actions"><button class="btn-copy" data-target="${id}-text">⧉ Copy</button></div>`
-    : '';
+    ? `<div class="msg-actions"><button class="btn-copy" data-target="${id}-text">⧉ Copy</button></div>` : '';
   div.innerHTML = `<div class="bubble" id="${id}-text">${escHtml(text)}</div>${copyRow}`;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
@@ -332,6 +361,23 @@ async function logApplication() {
   setBtnLoading(btn, false, '✓ Log Application');
 }
 
+// ─── JD Status Display ────────────────────────────────────────────────────────
+function refreshJDStatus() {
+  const statusEl  = el('jd-status');
+  const statusTxt = el('jd-status-text');
+  const preview   = el('jd-preview');
+  if (state.jd) {
+    statusEl.className = 'jd-status loaded';
+    statusTxt.textContent = state.jd.title || state.jd.domain || 'JD loaded';
+    preview.textContent = state.jd.text.slice(0, 300) + '…';
+    preview.classList.remove('hidden');
+  } else {
+    statusEl.className = 'jd-status empty';
+    statusTxt.textContent = 'No JD loaded — open a job posting and Re-scan';
+    preview.classList.add('hidden');
+  }
+}
+
 // ─── PROFILE TAB ─────────────────────────────────────────────────────────────
 function bindProfileTab() {
   const uploadInput = el('resume-upload');
@@ -343,23 +389,19 @@ function bindProfileTab() {
     if (!file) return;
     el('resume-upload-name').textContent = file.name;
     parseBtn.disabled = false;
-    state.parsedResumeText = null; // reset
-
+    state.parsedResumeText = null;
     const reader = new FileReader();
     if (file.type === 'application/pdf') {
       reader.readAsArrayBuffer(file);
-      reader.onload = async () => {
-        // Basic PDF text extraction — pull readable strings from binary
+      reader.onload = () => {
         const bytes = new Uint8Array(reader.result);
         let text = '';
-        for (let i = 0; i < bytes.length - 1; i++) {
-          if (bytes[i] >= 32 && bytes[i] < 127) text += String.fromCharCode(bytes[i]);
-          else if (bytes[i] === 10 || bytes[i] === 13) text += '\n';
+        for (let i = 0; i < bytes.length; i++) {
+          const b = bytes[i];
+          if (b >= 32 && b < 127) text += String.fromCharCode(b);
+          else if (b === 10 || b === 13) text += '\n';
         }
-        // Filter only lines that look like real text
-        text = text.split('\n')
-          .filter(l => l.trim().length > 3 && /[a-zA-Z]/.test(l))
-          .join('\n');
+        text = text.split('\n').filter(l => l.trim().length > 3 && /[a-zA-Z]/.test(l)).join('\n');
         state.parsedResumeText = text.slice(0, 12000);
       };
     } else {
@@ -375,10 +417,8 @@ function bindProfileTab() {
     try {
       const res = await sendMsg({ type:'PARSE_RESUME', text: state.parsedResumeText });
       if (res.success) {
-        // Merge parsed into state, preserving empty-module defaults
         state.profile = deepMergeProfile(res.profile);
         await chrome.storage.local.set({ profile: state.profile });
-        // Re-render the form with new data
         renderProfileModules();
         populateProfileForm();
         showFeedback(fb, '✓ Profile auto-filled! Review and save.', 'success');
@@ -396,10 +436,18 @@ function deepMergeProfile(parsed) {
   const base = structuredClone(DEFAULT_PROFILE);
   if (parsed.personal) Object.assign(base.personal, parsed.personal);
   if (parsed.modules) {
-    Object.keys(base.modules).forEach(key => {
+    // Array modules
+    ['education','workExperience','projects','achievements','courses'].forEach(key => {
       if (Array.isArray(parsed.modules[key]) && parsed.modules[key].length)
         base.modules[key] = parsed.modules[key];
     });
+    // Skills (object of arrays)
+    if (parsed.modules.skills) {
+      SKILL_GROUPS.forEach(g => {
+        if (Array.isArray(parsed.modules.skills[g.key]) && parsed.modules.skills[g.key].length)
+          base.modules.skills[g.key] = parsed.modules.skills[g.key];
+      });
+    }
   }
   return base;
 }
@@ -409,7 +457,7 @@ function renderProfileModules() {
   const container = el('profile-modules');
   container.innerHTML = '';
 
-  // Personal info
+  // Personal panel
   const personalPanel = document.createElement('div');
   personalPanel.className = 'module-panel';
   personalPanel.innerHTML = `
@@ -419,27 +467,28 @@ function renderProfileModules() {
     </div>
     <div class="module-body" id="module-body-personal">
       <div class="entry-row">
-        <input class="input" placeholder="Full Name"  data-field="personal.name" />
-        <input class="input" placeholder="Email"      data-field="personal.email" />
+        <input class="input" placeholder="Full Name"  data-field="personal.name"     />
+        <input class="input" placeholder="Email"      data-field="personal.email"    />
       </div>
       <div class="entry-row">
-        <input class="input" placeholder="Phone"      data-field="personal.phone" />
+        <input class="input" placeholder="Phone"      data-field="personal.phone"    />
         <input class="input" placeholder="Location"   data-field="personal.location" />
       </div>
       <div class="entry-row">
         <input class="input" placeholder="LinkedIn"   data-field="personal.linkedin" />
-        <input class="input" placeholder="GitHub"     data-field="personal.github" />
+        <input class="input" placeholder="GitHub"     data-field="personal.github"   />
       </div>
       <input class="input" placeholder="Portfolio / Website" data-field="personal.website" />
     </div>`;
   container.appendChild(personalPanel);
 
-  MODULE_CONFIG.forEach(mod => {
-    const panel = buildModulePanel(mod);
-    container.appendChild(panel);
-  });
+  // Skills panel (special — object of arrays, not array of objects)
+  container.appendChild(buildSkillsPanel());
 
-  // Collapse toggles
+  // Array-based modules
+  MODULE_CONFIG.forEach(mod => container.appendChild(buildModulePanel(mod)));
+
+  // Attach collapse toggles to all headers in this container
   container.querySelectorAll('.module-header').forEach(header => {
     header.addEventListener('click', () => {
       const body = el(`module-body-${header.dataset.module}`);
@@ -451,6 +500,85 @@ function renderProfileModules() {
   });
 }
 
+// ── Skills Panel ───────────────────────────────────────────────────────────────
+function buildSkillsPanel() {
+  const panel = document.createElement('div');
+  panel.className = 'module-panel';
+  panel.innerHTML = `
+    <div class="module-header" data-module="skills">
+      <div class="module-title"><span class="module-icon">⚡</span> Skills</div>
+      <span class="module-chevron">▾</span>
+    </div>
+    <div class="module-body" id="module-body-skills">
+      <div class="skills-grid" id="skills-grid"></div>
+    </div>`;
+
+  // Build each skill group section
+  const grid = panel.querySelector('#skills-grid');
+  SKILL_GROUPS.forEach(group => {
+    const section = document.createElement('div');
+    section.className = 'skill-group';
+    section.dataset.group = group.key;
+    section.innerHTML = `
+      <div class="skill-group-label">${group.label}</div>
+      <div class="skill-tags-row" id="skill-tags-${group.key}"></div>
+      <div class="skill-add-row">
+        <input class="input" id="skill-input-${group.key}" placeholder="Add ${group.label.split(' ')[0].toLowerCase()}…" />
+        <button class="btn-add-skill" data-group="${group.key}" title="Add">+</button>
+      </div>`;
+    grid.appendChild(section);
+
+    // Add skill on button click
+    section.querySelector('.btn-add-skill').addEventListener('click', () => {
+      const input = el(`skill-input-${group.key}`);
+      addSkillTag(group.key, input.value.trim());
+      input.value = '';
+    });
+    // Add skill on Enter key
+    section.querySelector(`#skill-input-${group.key}`).addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        addSkillTag(group.key, e.target.value.trim());
+        e.target.value = '';
+        e.preventDefault();
+      }
+    });
+  });
+
+  return panel;
+}
+
+function addSkillTag(groupKey, value) {
+  if (!value) return;
+  const container = el(`skill-tags-${groupKey}`);
+  const tag = document.createElement('div');
+  tag.className = 'skill-tag';
+  tag.innerHTML = `<span>${escHtml(value)}</span><button class="skill-tag-remove" title="Remove">✕</button>`;
+  tag.querySelector('.skill-tag-remove').addEventListener('click', () => tag.remove());
+  container.appendChild(tag);
+}
+
+function populateSkillTags() {
+  SKILL_GROUPS.forEach(group => {
+    const container = el(`skill-tags-${group.key}`);
+    if (!container) return;
+    container.innerHTML = '';
+    const skills = state.profile.modules?.skills?.[group.key] || [];
+    skills.forEach(skill => addSkillTag(group.key, skill));
+  });
+}
+
+function collectSkillsFromUI() {
+  const skills = {};
+  SKILL_GROUPS.forEach(group => {
+    const container = el(`skill-tags-${group.key}`);
+    skills[group.key] = container
+      ? Array.from(container.querySelectorAll('.skill-tag span')).map(s => s.textContent.trim()).filter(Boolean)
+      : [];
+  });
+  return skills;
+}
+
+// ── Array-based module panels ──────────────────────────────────────────────────
 function buildModulePanel(mod) {
   const panel = document.createElement('div');
   panel.className = 'module-panel';
@@ -489,9 +617,10 @@ function addModuleEntry(mod, container, data = {}) {
   }
 
   if (mod.bullets) {
-    const bullets = (data.bullets && data.bullets.length) ? data.bullets : [''];
-    html += `<div class="bullets-label">Bullet Points</div>
-      <div class="bullets-container">${bullets.map(b => bulletRowHtml(b)).join('')}</div>
+    const bullets = (data.bullets?.length) ? data.bullets : [''];
+    html += `
+      <div class="bullets-label">Bullet Points</div>
+      <div class="bullets-container">${bullets.map(bulletRowHtml).join('')}</div>
       <button class="btn-add-bullet" type="button">+</button>`;
   }
 
@@ -500,13 +629,16 @@ function addModuleEntry(mod, container, data = {}) {
 
   if (mod.bullets) {
     entryEl.querySelector('.btn-add-bullet').addEventListener('click', () => {
-      const bc = entryEl.querySelector('.bullets-container');
+      const bc  = entryEl.querySelector('.bullets-container');
       const div = document.createElement('div');
       div.innerHTML = bulletRowHtml('');
-      bc.appendChild(div.firstElementChild);
-      bc.lastElementChild?.querySelector('.btn-remove-bullet')?.addEventListener('click', e => e.target.closest('.bullet-input-row').remove());
+      const row = div.firstElementChild;
+      row.querySelector('.btn-remove-bullet').addEventListener('click', () => row.remove());
+      bc.appendChild(row);
     });
-    entryEl.querySelectorAll('.btn-remove-bullet').forEach(b => b.addEventListener('click', e => e.target.closest('.bullet-input-row').remove()));
+    entryEl.querySelectorAll('.btn-remove-bullet').forEach(b =>
+      b.addEventListener('click', () => b.closest('.bullet-input-row').remove())
+    );
   }
 
   container.appendChild(entryEl);
@@ -520,13 +652,16 @@ function bulletRowHtml(value) {
 }
 
 function populateProfileForm() {
-  const p = state.profile;
-  Object.entries(p.personal || {}).forEach(([key, val]) => {
+  // Personal fields
+  Object.entries(state.profile.personal || {}).forEach(([key, val]) => {
     const input = document.querySelector(`[data-field="personal.${key}"]`);
     if (input) input.value = val;
   });
+  // Skills
+  populateSkillTags();
+  // Array modules
   MODULE_CONFIG.forEach(mod => {
-    const entries = p.modules[mod.key] || [];
+    const entries   = state.profile.modules[mod.key] || [];
     const container = el(`entries-${mod.key}`);
     if (!container) return;
     container.innerHTML = '';
@@ -535,23 +670,30 @@ function populateProfileForm() {
 }
 
 async function saveProfile() {
+  // Personal
   const personal = {};
   document.querySelectorAll('[data-field^="personal."]').forEach(input => {
     personal[input.dataset.field.replace('personal.','')] = input.value.trim();
   });
-  const modules = {};
+  // Skills
+  const skills = collectSkillsFromUI();
+  // Array modules
+  const modules = { skills };
   MODULE_CONFIG.forEach(mod => {
     const container = el(`entries-${mod.key}`);
     if (!container) return;
     modules[mod.key] = Array.from(container.querySelectorAll('.module-entry')).map(entry => {
       const obj = {};
       entry.querySelectorAll('[data-key]').forEach(i => { obj[i.dataset.key] = i.value.trim(); });
-      if (mod.bullets) obj.bullets = Array.from(entry.querySelectorAll('.bullet-input-row input')).map(i => i.value.trim()).filter(Boolean);
+      if (mod.bullets) obj.bullets = Array.from(entry.querySelectorAll('.bullet-input-row input'))
+        .map(i => i.value.trim()).filter(Boolean);
       return obj;
     });
   });
+
   state.profile = { personal, modules };
   await chrome.storage.local.set({ profile: state.profile });
+
   const btn = el('btn-save-profile');
   const orig = btn.textContent;
   btn.textContent = '✓ Saved!';
@@ -560,16 +702,15 @@ async function saveProfile() {
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
 function bindSettingsTab() {
-  // Template file uploads
   bindTemplateUpload('resume-tpl-upload', 'resume-tpl-name', 'resume-tpl-preview', 'resume-tpl-loaded', 'resumeTemplate');
   bindTemplateUpload('cover-tpl-upload',  'cover-tpl-name',  'cover-tpl-preview',  'cover-tpl-loaded',  'coverTemplate');
 
   document.querySelectorAll('.btn-clear-tpl').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const key = btn.dataset.tpl;
+      const key    = btn.dataset.tpl;
+      const prefix = key === 'resumeTemplate' ? 'resume-tpl' : 'cover-tpl';
       delete state.settings[key];
       await chrome.storage.local.set({ settings: state.settings });
-      const prefix = key === 'resumeTemplate' ? 'resume-tpl' : 'cover-tpl';
       el(`${prefix}-name`).textContent = 'Upload .tex file…';
       el(`${prefix}-preview`).classList.add('hidden');
     });
@@ -582,8 +723,7 @@ function bindTemplateUpload(inputId, nameId, previewId, loadedId, storageKey) {
   el(inputId).addEventListener('change', async () => {
     const file = el(inputId).files[0];
     if (!file) return;
-    const text = await file.text();
-    state.settings[storageKey] = text;
+    state.settings[storageKey] = await file.text();
     el(nameId).textContent = 'Upload .tex file…';
     el(loadedId).textContent = `✓ ${file.name}`;
     el(previewId).classList.remove('hidden');
@@ -596,22 +736,20 @@ function populateSettingsForm() {
   setVal('s-or-model', s.openRouterModel || 'anthropic/claude-3.5-sonnet');
   setVal('s-gem-key',  s.geminiKey);
   setVal('s-sheets',   s.sheetsUrl);
-
-  if (s.resumeTemplate) { el('resume-tpl-loaded').textContent = '✓ template.tex (cached)'; el('resume-tpl-preview').classList.remove('hidden'); }
-  if (s.coverTemplate)  { el('cover-tpl-loaded').textContent  = '✓ template.tex (cached)'; el('cover-tpl-preview').classList.remove('hidden'); }
+  if (s.resumeTemplate) { el('resume-tpl-loaded').textContent = '✓ resume.tex (cached)'; el('resume-tpl-preview').classList.remove('hidden'); }
+  if (s.coverTemplate)  { el('cover-tpl-loaded').textContent  = '✓ cover.tex (cached)';  el('cover-tpl-preview').classList.remove('hidden'); }
 }
 
 async function saveSettings() {
   state.settings = {
-    ...state.settings,                          // keep templates
+    ...state.settings,               // preserve cached templates
     openRouterKey:   el('s-or-key').value.trim(),
     openRouterModel: el('s-or-model').value.trim(),
     geminiKey:       el('s-gem-key').value.trim(),
     sheetsUrl:       el('s-sheets').value.trim(),
   };
   await chrome.storage.local.set({ settings: state.settings });
-  const fb = el('settings-feedback');
-  showFeedback(fb, '✓ Settings saved', 'success');
+  showFeedback(el('settings-feedback'), '✓ Settings saved', 'success');
 }
 
 // ─── STORAGE TAB ─────────────────────────────────────────────────────────────
@@ -619,72 +757,50 @@ function bindStorageTab() {
   el('btn-refresh-storage').addEventListener('click', refreshStorageExplorer);
   el('btn-clear-all-storage').addEventListener('click', async () => {
     if (!confirm('Clear ALL storage? This deletes your profile, settings, and JD.')) return;
-    await sendMsg({ type: 'CLEAR_ALL_STORAGE' });
+    await sendMsg({ type:'CLEAR_ALL_STORAGE' });
     state.profile  = structuredClone(DEFAULT_PROFILE);
     state.settings = {};
     state.jd       = null;
     refreshStorageExplorer();
     refreshJDStatus();
+    clearAnalysisPanel();
   });
 }
 
 async function refreshStorageExplorer() {
-  const res = await sendMsg({ type: 'GET_ALL_STORAGE' });
+  const res  = await sendMsg({ type:'GET_ALL_STORAGE' });
   const list = el('storage-list');
   list.innerHTML = '';
-  if (!res.success || !Object.keys(res.data).length) {
+  const entries = Object.entries(res.data || {});
+  if (!entries.length) {
     list.innerHTML = '<p class="hint-text" style="text-align:center;padding:10px 0">Storage is empty.</p>';
     return;
   }
-  Object.entries(res.data).forEach(([key, value]) => {
-    const str = JSON.stringify(value);
+  entries.forEach(([key, value]) => {
+    const str  = JSON.stringify(value);
     const size = new Blob([str]).size;
-    const row = document.createElement('div');
+    const row  = document.createElement('div');
     row.className = 'storage-row';
     row.innerHTML = `
       <div class="storage-row-header">
         <span class="storage-key">${escHtml(key)}</span>
         <div class="row-gap">
-          <span class="storage-size">${formatBytes(size)}</span>
+          <span class="storage-size">${fmtBytes(size)}</span>
           <button class="btn-delete-key" data-key="${escAttr(key)}">Delete</button>
         </div>
       </div>
       <div class="storage-preview">${escHtml(str.slice(0, 120))}${str.length > 120 ? '…' : ''}</div>`;
     row.querySelector('.btn-delete-key').addEventListener('click', async e => {
-      const k = e.target.dataset.key;
-      await sendMsg({ type: 'DELETE_STORAGE_KEY', key: k });
+      await sendMsg({ type:'DELETE_STORAGE_KEY', key: e.target.dataset.key });
       row.remove();
     });
     list.appendChild(row);
   });
 }
 
-function formatBytes(b) {
-  if (b < 1024) return `${b} B`;
-  if (b < 1048576) return `${(b/1024).toFixed(1)} KB`;
-  return `${(b/1048576).toFixed(2)} MB`;
-}
-
-// ─── JD Status ────────────────────────────────────────────────────────────────
-function refreshJDStatus() {
-  const statusEl  = el('jd-status');
-  const statusTxt = el('jd-status-text');
-  const preview   = el('jd-preview');
-  if (state.jd) {
-    statusEl.className = 'jd-status loaded';
-    statusTxt.textContent = state.jd.title || state.jd.domain || 'JD loaded';
-    preview.textContent = state.jd.text.slice(0, 300) + '…';
-    preview.classList.remove('hidden');
-  } else {
-    statusEl.className = 'jd-status empty';
-    statusTxt.textContent = 'No JD loaded — open a job posting and Re-scan';
-    preview.classList.add('hidden');
-  }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function el(id) { return document.getElementById(id); }
-function setVal(id, val) { const e = el(id); if (e && val !== undefined) e.value = val; }
+// ─── Utility ──────────────────────────────────────────────────────────────────
+function el(id)   { return document.getElementById(id); }
+function setVal(id, val) { const e = el(id); if (e && val != null) e.value = val; }
 
 function sendMsg(msg) {
   return new Promise((resolve, reject) => {
@@ -703,12 +819,12 @@ function setBtnLoading(btn, loading, label) {
 }
 
 function showToast(msg, type = 'error') {
-  const toast = document.createElement('div');
   const bg = type === 'success' ? '#3dd68c' : '#f06060';
-  toast.style.cssText = `position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:${bg};color:#fff;padding:8px 16px;border-radius:8px;font-size:12px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 4px 16px #0004;`;
-  toast.textContent = msg;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 4000);
+  const t  = document.createElement('div');
+  t.style.cssText = `position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:${bg};color:#fff;padding:8px 16px;border-radius:8px;font-size:12px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 4px 16px #0006;`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4000);
 }
 
 function showFeedback(el, msg, type) {
@@ -718,5 +834,11 @@ function showFeedback(el, msg, type) {
   setTimeout(() => el.classList.add('hidden'), 3500);
 }
 
-function escHtml(s)  { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escAttr(s)  { return String(s||'').replace(/"/g,'&quot;'); }
+function fmtBytes(b) {
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b/1024).toFixed(1)} KB`;
+  return `${(b/1048576).toFixed(2)} MB`;
+}
+
+function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s) { return String(s||'').replace(/"/g,'&quot;'); }

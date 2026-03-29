@@ -1,147 +1,94 @@
-# Briefly V2 — Upgrade Guide & Reference
+# Briefly V2.1 — Change Log & Reference
 
-## Project Structure
+## What Changed in V2.1
+
+### 1. `prompts.js` (new file)
+All AI prompts are now centralised in a single ES module. Import them anywhere with:
+```js
+import { Prompts, GUARDRAILS } from './prompts.js';
+```
+Prompts covered: `extractJDMeta`, `parseResume`, `chat`, `generateResume`, `generateCoverLetter`.
+
+### 2. `manifest.json`
+- `"type": "module"` added to the `background` block so the service worker can use ES module `import` syntax.
+
+### 3. `background.js`
+- Imports `Prompts` from `./prompts.js` — all prompt strings removed from background.
+- `callGemini` gains a `requireJson` parameter. When `true`, `generationConfig.responseMimeType` is set to `"application/json"`, activating Gemini's native JSON mode (no more manual JSON stripping).
+- `handleExtractJDMeta` now accepts `msg.profile` and passes both `jd` and `profile` into `Prompts.extractJDMeta(jd, profile)`.
+- `REFINE_EXPERIENCE` handler and all related logic **removed**.
+
+### 4. Profile Tab — Skills Module
+A dedicated **Skills** panel is now rendered inside the Profile tab with three tag-input groups:
+- **Languages** — Python, TypeScript, Go, …
+- **Frameworks & Libraries** — React, FastAPI, PyTorch, …
+- **Tools & Platforms** — Docker, AWS, GitHub Actions, …
+
+Tags are added by pressing **Enter** or clicking **+**, and removed by clicking **✕** on each tag. The skills are saved as `profile.modules.skills.{ languages, frameworks, tools }` — matching the `parseResume` schema in `prompts.js`.
+
+When **Parse & Auto-fill Profile** is used, Gemini automatically populates all three skill groups.
+
+### 5. Apply Tab — JD Analysis Panel
+After **Re-scan**, a new **JD Analysis** panel appears (or updates) with:
+
+| Section | Colour | Content |
+|---|---|---|
+| Exact Skill Matches | 🟢 Green pills | Skills in your profile that appear verbatim in the JD |
+| Close Skill Matches | 🟡 Amber pills | Skills in your profile closely related to JD requirements |
+| Tailored Role Summaries | 🔵 Blue cards | A 2–3 sentence description per work experience role, tailored to the JD |
+
+The **Company** and **Role** tracker inputs are still auto-filled as before.
+
+### 6. Tailored Bullets — Removed
+The old "Refine Experience" / "Tailored Bullets" panel is gone. The `workExRoleDescriptions` from `extractJDMeta` replaces it with a richer, JD-aware narrative per role.
+
+---
+
+## File Structure (Extension Folder)
 
 ```
-briefly-v2/
-├── docker/
-│   ├── server.js            LaTeX compiler microservice
-│   ├── package.json
-│   ├── Dockerfile
-│   └── docker-compose.yml
-│
-├── extension/
-│   ├── manifest.json        MV3 + "downloads" permission
-│   ├── background.js        Service worker (all AI + API logic)
-│   ├── content.js           Page text extractor
-│   ├── sidepanel.html       UI — 4 tabs: Apply / Profile / Settings / Storage
-│   ├── sidepanel.css
-│   ├── sidepanel.js
-│   └── icons/
-│       ├── icon16.png
-│       ├── icon32.png
-│       ├── icon48.png
-│       └── icon128.png
-│
-└── sheets/
-    └── code.gs              Google Apps Script with dropdown validation
+extension/
+├── manifest.json       ← "type": "module" added to background
+├── background.js       ← ES module; imports Prompts; no REFINE_EXPERIENCE
+├── prompts.js          ← NEW: all AI prompt builders
+├── content.js          ← unchanged
+├── sidepanel.html      ← JD Analysis section; Skills in Profile; no Tailored Bullets
+├── sidepanel.css       ← pill, role-card, skill-tag styles added
+├── sidepanel.js        ← Skills module; JD analysis rendering; refine logic removed
+└── icons/
 ```
 
 ---
 
-## Part 1 — Docker LaTeX Compiler
+## Gemini JSON Mode
 
-### Quick Start
+`callGemini(..., requireJson = true)` sets:
+```json
+{ "responseMimeType": "application/json" }
+```
+This tells Gemini to return a guaranteed-valid JSON string — no markdown fences, no preamble. Used for `EXTRACT_JD_META` and `PARSE_RESUME`. The `chat` path keeps `requireJson = false`.
 
-```bash
-cd docker/
-docker compose up --build -d
+---
+
+## Re-scan Flow (V2.1)
+
+```
+Click ↻ Re-scan
+  │
+  ├─ SCRAPE_JD        → background extracts page text, stores jd
+  │
+  └─ EXTRACT_JD_META  → Gemini (JSON mode) analyses jd + full profile
+       │
+       ├─ company, role          → auto-fill tracker inputs
+       ├─ skillsExactMatch       → green pills
+       ├─ skillsCloseMatch       → amber pills
+       └─ workExRoleDescriptions → blue role summary cards
 ```
 
-The service starts at **http://localhost:3000**.
-
-**Test it:**
-```bash
-# Health check
-curl http://localhost:3000/health
-
-# Compile a minimal document
-curl -X POST http://localhost:3000/compile \
-  -H "Content-Type: application/json" \
-  -d '{"latex": "\\documentclass{article}\\begin{document}Hello\\end{document}", "filename": "test"}' \
-  --output test.pdf
-```
-
-**Stop:**
-```bash
-docker compose down
-```
-
-### Behaviour Notes
-- Each compile runs in an isolated `/tmp/briefly_<uuid>/` directory
-- **30-second timeout** — returns `504` with the log tail if exceeded
-- **Two pdflatex passes** — ensures correct cross-references and page layout
-- Cleanup happens in `finally` — temp files are always deleted, even on error
-- If pdflatex fails, a JSON body `{ error, log }` is returned (last 4 KB of `.log` file)
-
 ---
 
-## Part 2 — Extension Installation
+## Notes
 
-```bash
-cd extension/
-# Icons are already generated. Load unpacked in Chrome:
-```
-
-1. `chrome://extensions/` → Enable **Developer Mode**
-2. **Load unpacked** → select the `extension/` folder
-3. The ⬡ icon appears in your toolbar → click to open the side panel
-
----
-
-## Part 3 — Settings Tab
-
-| Field | Value |
-|---|---|
-| OpenRouter API Key | `sk-or-…` from openrouter.ai |
-| OpenRouter Model | `anthropic/claude-3.5-sonnet` (default) |
-| Gemini API Key | `AIza…` from aistudio.google.com |
-| Google Script URL | Deployed Web App URL |
-| Resume Template | Upload a `.tex` file |
-| Cover Letter Template | Upload a `.tex` file |
-
-Templates are stored as strings in `chrome.storage.local`. Clear them from the Settings UI.
-
----
-
-## Part 4 — Google Sheets
-
-1. New Google Sheet → **Extensions → Apps Script**
-2. Paste `sheets/code.gs` (replace all existing code) → Save
-3. **Deploy → New deployment**
-   - Type: **Web App**
-   - Execute as: **Me**
-   - Who has access: **Anyone**
-4. Authorize → copy URL → paste in Briefly Settings
-5. Test by visiting the URL in your browser (GET returns status JSON)
-
-The script auto-creates an **Applications** tab with:
-- Frozen header row (blue)
-- Status column with a dropdown: `Applied / OA / Interview / Rejected / Offer`
-- Row colour-coding by status
-- Validation applied to all future rows AND per-row on append
-
----
-
-## V2 Change Log
-
-### New Features
-- **Resume Parser** — upload PDF/TXT → Gemini extracts structured profile data → auto-fills all inputs
-- **Template uploads** — `.tex` files stored in storage instead of textarea
-- **Non-blocking UI** — no more full-screen loading overlay; only the clicked button disables
-- **Smart Re-scan** — extracts Company + Role via Gemini and auto-fills the Tracker; auto-triggers bullet refinement
-- **PDF Download** — LaTeX is compiled by the Docker service; PDF saved via `chrome.downloads` as `Name_DocType_Company_Role.pdf`
-- **Storage Explorer** tab — view all `chrome.storage.local` keys with size, preview, delete, and clear-all
-- **Offer status** — added to tracker dropdown and Sheets validation
-
-### Bug Fixes
-- Gemini model updated to `gemini-2.0-flash`
-- Sheets `fetch` now sends `Content-Type: text/plain` (avoids CORS preflight)
-- `downloads` permission added to `manifest.json`
-
-### Embellishment Guardrails (Claude)
-**Allowed:** metric embellishment, keyword rephrasing, reordering tech stack  
-**Forbidden:** changing company/university/project names, GPAs, inventing skills not in profile
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| Docker build slow | First build installs TeX Live (~400 MB). Subsequent builds use cache. |
-| `pdflatex` timeout | Check for `\usepackage` requiring network or missing fonts; simplify template |
-| PDF not downloading | Ensure Docker is running on port 3000; check Chrome's download folder |
-| Gemini parse fails | File may be scanned PDF (image-only); try a text-based PDF or paste as TXT |
-| Sheets 403 | Re-deploy the Apps Script and ensure access is set to "Anyone" |
-| Re-scan doesn't fill Company/Role | Gemini key missing in Settings, or JD text too short |
+- The background service worker is now an **ES Module**. This means you cannot use `importScripts()` inside it — use `import` statements at the top level only.
+- Skills entered manually in the Profile tab are included in the profile sent to `extractJDMeta`, so the skill-matching analysis is always based on your complete, up-to-date profile.
+- The Docker LaTeX compiler (`docker/`) and Google Apps Script (`sheets/code.gs`) are **unchanged** from V2.
