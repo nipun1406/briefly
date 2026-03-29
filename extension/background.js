@@ -1,9 +1,11 @@
-// background.js — Briefly V2.1 Service Worker (ES Module)
+// background.js — Briefly v2.1.1 (100% OpenRouter)
 import { Prompts } from './prompts.js';
 
 const COMPILER_URL = 'http://localhost:3000/compile';
-const GEMINI_MODEL = 'gemini-2.0-flash';
-const GEMINI_BASE  = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}`;
+
+// ─── Default model IDs ────────────────────────────────────────────────────────
+const DEFAULT_TEXT_MODEL  = 'anthropic/claude-3.5-sonnet';
+const DEFAULT_LATEX_MODEL = 'anthropic/claude-3.5-sonnet';
 
 // ─── Side Panel ────────────────────────────────────────────────────────────────
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
@@ -11,23 +13,50 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(consol
 // ─── Message Router ────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const map = {
-    SCRAPE_JD:         () => handleScrapeJD(sendResponse),
-    GET_JD:            () => handleGetJD(sendResponse),
-    CLEAR_JD:          () => handleClearJD(sendResponse),
-    GENERATE_RESUME:   () => handleGenerateResume(msg, sendResponse),
-    GENERATE_COVER:    () => handleGenerateCover(msg, sendResponse),
-    COMPILE_AND_SAVE:  () => handleCompileAndSave(msg, sendResponse),
-    ASK_GEMINI:        () => handleGeminiChat(msg, sendResponse),
-    PARSE_RESUME:      () => handleParseResume(msg, sendResponse),
-    EXTRACT_JD_META:   () => handleExtractJDMeta(msg, sendResponse),
-    LOG_APPLICATION:   () => handleLogApplication(msg, sendResponse),
-    GET_ALL_STORAGE:   () => handleGetAllStorage(sendResponse),
-    DELETE_STORAGE_KEY:() => handleDeleteStorageKey(msg, sendResponse),
-    CLEAR_ALL_STORAGE: () => handleClearAllStorage(sendResponse),
+    SCRAPE_JD:          () => handleScrapeJD(sendResponse),
+    GET_JD:             () => handleGetJD(sendResponse),
+    CLEAR_JD:           () => handleClearJD(sendResponse),
+    GENERATE_RESUME:    () => handleGenerateResume(msg, sendResponse),
+    GENERATE_COVER:     () => handleGenerateCover(msg, sendResponse),
+    COMPILE_AND_SAVE:   () => handleCompileAndSave(msg, sendResponse),
+    ASK_AI:             () => handleChat(msg, sendResponse),
+    PARSE_RESUME:       () => handleParseResume(msg, sendResponse),
+    EXTRACT_JD_META:    () => handleExtractJDMeta(msg, sendResponse),
+    LOG_APPLICATION:    () => handleLogApplication(msg, sendResponse),
+    GET_ALL_STORAGE:    () => handleGetAllStorage(sendResponse),
+    DELETE_STORAGE_KEY: () => handleDeleteStorageKey(msg, sendResponse),
+    CLEAR_ALL_STORAGE:  () => handleClearAllStorage(sendResponse),
   };
   const fn = map[msg.type];
   if (fn) { fn(); return true; }
 });
+
+// ─── Model Resolution ─────────────────────────────────────────────────────────
+/**
+ * Resolves which model ID to use for a given task type.
+ *
+ * Fallback rules:
+ *   - If the requested model slot is filled → use it.
+ *   - If the requested slot is empty but the OTHER slot is filled → use the other one.
+ *   - If BOTH slots are empty → use the hardcoded default for the task type.
+ *
+ * @param {'text'|'latex'} taskType
+ * @param {{ textModel?: string, latexModel?: string }} settings
+ */
+function resolveModel(taskType, settings) {
+  const text  = (settings.textModel  || '').trim();
+  const latex = (settings.latexModel || '').trim();
+
+  if (taskType === 'text') {
+    if (text)  return text;
+    if (latex) return latex;          // fallback: use latex model for text tasks
+    return DEFAULT_TEXT_MODEL;
+  }
+  // taskType === 'latex'
+  if (latex) return latex;
+  if (text)  return text;             // fallback: use text model for latex tasks
+  return DEFAULT_LATEX_MODEL;
+}
 
 // ─── JD ───────────────────────────────────────────────────────────────────────
 async function handleScrapeJD(sendResponse) {
@@ -72,18 +101,21 @@ async function handleClearJD(sendResponse) {
   sendResponse({ success: true });
 }
 
-// ─── Extract JD Meta (company, role, skill matches, role descriptions) ─────────
-// Now accepts `profile` and passes both jd + profile into Prompts.extractJDMeta
+// ─── JD Meta Extraction ────────────────────────────────────────────────────────
 async function handleExtractJDMeta(msg, sendResponse) {
   try {
     const settings = await getSettings();
-    const { jd, profile } = msg;
-    const prompt = Prompts.extractJDMeta(jd, profile);
-    // requireJson: true → uses Gemini native JSON mode (responseMimeType)
-    const raw = await callGemini(settings.geminiKey, prompt.system, prompt.user, [], 2048, true);
-    const meta = JSON.parse(raw);
+    const model    = resolveModel('text', settings);
+    const prompt   = Prompts.extractJDMeta(msg.jd, msg.profile);
+
+    const raw      = await callOpenRouter(settings.openRouterKey, prompt.system, prompt.user, [], model);
+
+    // JSON safety net — strip any markdown fences OpenRouter may wrap around output
+    const cleanJson = raw.replace(/```json\n?|```/g, '').trim();
+    const meta      = JSON.parse(cleanJson);
+
     sendResponse({
-      success: true,
+      success:                true,
       company:                meta.company                || '',
       role:                   meta.role                   || '',
       workExRoleDescriptions: meta.workExRoleDescriptions || {},
@@ -99,9 +131,15 @@ async function handleExtractJDMeta(msg, sendResponse) {
 async function handleParseResume(msg, sendResponse) {
   try {
     const settings = await getSettings();
-    const prompt = Prompts.parseResume(msg.text);
-    const raw    = await callGemini(settings.geminiKey, prompt.system, prompt.user, [], 4096, true);
-    const profile = JSON.parse(raw);
+    const model    = resolveModel('text', settings);
+    const prompt   = Prompts.parseResume(msg.text);
+
+    const raw       = await callOpenRouter(settings.openRouterKey, prompt.system, prompt.user, [], model);
+
+    // JSON safety net — strip any markdown fences
+    const cleanJson = raw.replace(/```json\n?|```/g, '').trim();
+    const profile   = JSON.parse(cleanJson);
+
     sendResponse({ success: true, profile });
   } catch (e) {
     sendResponse({ success: false, error: e.message });
@@ -112,8 +150,9 @@ async function handleParseResume(msg, sendResponse) {
 async function handleGenerateResume(msg, sendResponse) {
   try {
     const settings = await getSettings();
+    const model    = resolveModel('latex', settings);
     const prompt   = Prompts.generateResume(msg.profile, msg.jd, msg.latexTemplate || settings.resumeTemplate || '');
-    const latex    = await callOpenRouter(settings.openRouterKey, settings.openRouterModel, prompt.system, prompt.user);
+    const latex    = await callOpenRouter(settings.openRouterKey, prompt.system, prompt.user, [], model);
     sendResponse({ success: true, latex });
   } catch (e) {
     sendResponse({ success: false, error: e.message });
@@ -123,9 +162,24 @@ async function handleGenerateResume(msg, sendResponse) {
 async function handleGenerateCover(msg, sendResponse) {
   try {
     const settings = await getSettings();
+    const model    = resolveModel('latex', settings);
     const prompt   = Prompts.generateCoverLetter(msg.profile, msg.jd, msg.latexTemplate || settings.coverTemplate || '');
-    const latex    = await callOpenRouter(settings.openRouterKey, settings.openRouterModel, prompt.system, prompt.user);
+    const latex    = await callOpenRouter(settings.openRouterKey, prompt.system, prompt.user, [], model);
     sendResponse({ success: true, latex });
+  } catch (e) {
+    sendResponse({ success: false, error: e.message });
+  }
+}
+
+// ─── Chat (was handleGeminiChat) ──────────────────────────────────────────────
+async function handleChat(msg, sendResponse) {
+  try {
+    const settings = await getSettings();
+    const model    = resolveModel('text', settings);
+    const { question, jd, profile, detailedMode, history } = msg;
+    const prompt   = Prompts.chat(profile, jd, detailedMode);
+    const answer   = await callOpenRouter(settings.openRouterKey, prompt.system, question, history || [], model);
+    sendResponse({ success: true, answer });
   } catch (e) {
     sendResponse({ success: false, error: e.message });
   }
@@ -153,27 +207,11 @@ async function handleCompileAndSave(msg, sendResponse) {
     const base64  = arrayBufferToBase64(buffer);
     const dataUrl = `data:application/pdf;base64,${base64}`;
     await chrome.downloads.download({
-      url: dataUrl,
+      url:      dataUrl,
       filename: `${sanitizeFilename(filename || 'document')}.pdf`,
-      saveAs: false,
+      saveAs:   false,
     });
     sendResponse({ success: true, filename: sanitizeFilename(filename) });
-  } catch (e) {
-    sendResponse({ success: false, error: e.message });
-  }
-}
-
-// ─── Gemini Chat ───────────────────────────────────────────────────────────────
-async function handleGeminiChat(msg, sendResponse) {
-  try {
-    const settings = await getSettings();
-    const { question, jd, profile, detailedMode, history } = msg;
-    const prompt   = Prompts.chat(profile, jd, detailedMode);
-    const answer   = await callGemini(
-      settings.geminiKey, prompt.system, question, history || [],
-      detailedMode ? 2048 : 512, false
-    );
-    sendResponse({ success: true, answer });
   } catch (e) {
     sendResponse({ success: false, error: e.message });
   }
@@ -189,9 +227,9 @@ async function handleLogApplication(msg, sendResponse) {
       url:     msg.url || '', notes: msg.notes || '',
     };
     const res = await fetch(settings.sheetsUrl, {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload),
+      body:    JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(`Sheets HTTP ${res.status}`);
     sendResponse({ success: true });
@@ -214,10 +252,25 @@ async function handleClearAllStorage(sendResponse) {
   sendResponse({ success: true });
 }
 
-// ─── API Helpers ───────────────────────────────────────────────────────────────
-async function callOpenRouter(apiKey, model, systemPrompt, userPrompt) {
+// ─── Unified OpenRouter API Call ───────────────────────────────────────────────
+/**
+ * Single function for all AI calls. Routes every task through OpenRouter.
+ *
+ * @param {string}   apiKey       - OpenRouter API key
+ * @param {string}   systemPrompt
+ * @param {string}   userPrompt
+ * @param {Array}    history      - [{role, content}] previous chat turns (pass [] for non-chat)
+ * @param {string}   modelId      - Fully-qualified OpenRouter model string
+ */
+async function callOpenRouter(apiKey, systemPrompt, userPrompt, history = [], modelId) {
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...history.map(h => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content })),
+    { role: 'user', content: userPrompt },
+  ];
+
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
+    method:  'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type':  'application/json',
@@ -225,55 +278,18 @@ async function callOpenRouter(apiKey, model, systemPrompt, userPrompt) {
       'X-Title':       'Briefly',
     },
     body: JSON.stringify({
-      model:    model || 'anthropic/claude-3.5-sonnet',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: userPrompt   },
-      ],
+      model:      modelId,
+      messages,
       max_tokens: 4096,
     }),
   });
+
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`OpenRouter ${res.status}: ${err}`);
   }
   const data = await res.json();
   return data.choices[0].message.content;
-}
-
-/**
- * @param {string}  apiKey
- * @param {string}  systemPrompt
- * @param {string}  userPrompt
- * @param {Array}   history       - [{role, content}] previous turns
- * @param {number}  maxTokens
- * @param {boolean} requireJson   - when true, adds responseMimeType:"application/json"
- */
-async function callGemini(apiKey, systemPrompt, userPrompt, history = [], maxTokens = 1024, requireJson = false) {
-  const generationConfig = { maxOutputTokens: maxTokens };
-  if (requireJson) generationConfig.responseMimeType = 'application/json';
-
-  const res = await fetch(`${GEMINI_BASE}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemPrompt }] },
-      contents: [
-        ...history.map(h => ({
-          role:  h.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: h.content }],
-        })),
-        { role: 'user', parts: [{ text: userPrompt }] },
-      ],
-      generationConfig,
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Gemini ${res.status}: ${err}`);
-  }
-  const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
 // ─── Utility ───────────────────────────────────────────────────────────────────

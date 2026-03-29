@@ -1,5 +1,9 @@
 'use strict';
-// sidepanel.js — Briefly V2.1
+// sidepanel.js — Briefly v2.1.1
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const DEFAULT_TEXT_MODEL  = 'anthropic/claude-3.5-sonnet';
+const DEFAULT_LATEX_MODEL = 'anthropic/claude-3.5-sonnet';
 
 // ─── Profile Schema ───────────────────────────────────────────────────────────
 const DEFAULT_PROFILE = {
@@ -14,35 +18,33 @@ const DEFAULT_PROFILE = {
   }
 };
 
-// Skill sub-categories (drives the Skills module UI)
 const SKILL_GROUPS = [
-  { key: 'languages',  label: 'Languages'  },
+  { key: 'languages',  label: 'Languages' },
   { key: 'frameworks', label: 'Frameworks & Libraries' },
   { key: 'tools',      label: 'Tools & Platforms' },
 ];
 
-// Array-based modules rendered dynamically
 const MODULE_CONFIG = [
   {
     key: 'education', label: 'Education', icon: '🎓',
     fields: [
-      { key:'institution', placeholder:'University of…' },
-      { key:'degree',      placeholder:'B.Sc. Computer Science' },
-      { key:'field',       placeholder:'Major / Specialization' },
-      { key:'startDate',   placeholder:'Sep 2020', half:true },
-      { key:'endDate',     placeholder:'May 2024', half:true },
-      { key:'gpa',         placeholder:'3.8 / 4.0', half:true },
+      { key:'institution', placeholder:'Institution' },
+      { key:'degree',      placeholder:'Degree' },
+      { key:'field',       placeholder:'Major' },
+      { key:'startDate',   placeholder:'Start Date', half:true },
+      { key:'endDate',     placeholder:'End Date', half:true },
+      { key:'gpa',         placeholder:'GPA', half:true },
     ],
     bullets: true,
   },
   {
     key: 'workExperience', label: 'Work Experience', icon: '💼',
     fields: [
-      { key:'company',   placeholder:'Acme Corp' },
-      { key:'title',     placeholder:'Software Engineer' },
-      { key:'location',  placeholder:'Remote / Sydney', half:true },
-      { key:'startDate', placeholder:'Jan 2023',        half:true },
-      { key:'endDate',   placeholder:'Present',         half:true },
+      { key:'company',   placeholder:'Company' },
+      { key:'title',     placeholder:'Title' },
+      { key:'location',  placeholder:'Location', half:true },
+      { key:'startDate', placeholder:'Start Date', half:true },
+      { key:'endDate',   placeholder:'End Date',  half:true },
     ],
     bullets: true,
   },
@@ -50,16 +52,16 @@ const MODULE_CONFIG = [
     key: 'projects', label: 'Projects', icon: '🚀',
     fields: [
       { key:'name', placeholder:'Project Name' },
-      { key:'tech', placeholder:'React, Node, Postgres' },
-      { key:'url',  placeholder:'https://github.com/…' },
+      { key:'tech', placeholder:'Tech Stack' },
+      { key:'url',  placeholder:'Link' },
     ],
     bullets: true,
   },
   {
     key: 'achievements', label: 'Achievements', icon: '🏆',
     fields: [
-      { key:'name',        placeholder:"Dean's List / Hackathon Winner" },
-      { key:'date',        placeholder:'2023', half:true },
+      { key:'name',        placeholder:"Achievement" },
+      { key:'date',        placeholder:'Date', half:true },
       { key:'description', placeholder:'Brief details…' },
     ],
     bullets: false,
@@ -67,10 +69,10 @@ const MODULE_CONFIG = [
   {
     key: 'courses', label: 'Courses & Training', icon: '📚',
     fields: [
-      { key:'name',        placeholder:'Machine Learning Specialization' },
-      { key:'institution', placeholder:'Coursera / Udemy', half:true },
-      { key:'date',        placeholder:'2023',             half:true },
-      { key:'level',       placeholder:'Beginner / Pro',   half:true },
+      { key:'name',        placeholder:'Name' },
+      { key:'institution', placeholder:'Institution', half:true },
+      { key:'date',        placeholder:'Date',             half:true },
+      { key:'level',       placeholder:'Level',   half:true },
     ],
     bullets: false,
   },
@@ -78,11 +80,11 @@ const MODULE_CONFIG = [
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const state = {
-  profile:     structuredClone(DEFAULT_PROFILE),
-  settings:    {},
-  jd:          null,
-  chatHistory: [],
-  detailedMode:false,
+  profile:          structuredClone(DEFAULT_PROFILE),
+  settings:         {},
+  jd:               null,
+  chatHistory:      [],
+  detailedMode:     false,
   parsedResumeText: null,
 };
 
@@ -124,7 +126,7 @@ function bindTabNav() {
 function bindApplicationTab() {
   el('btn-rescan').addEventListener('click', handleRescan);
   el('btn-clear-jd').addEventListener('click', async () => {
-    await sendMsg({ type:'CLEAR_JD' });
+    await sendMsg({ type: 'CLEAR_JD' });
     state.jd = null;
     refreshJDStatus();
     clearAnalysisPanel();
@@ -157,24 +159,19 @@ function bindApplicationTab() {
 }
 
 // ── Re-scan ────────────────────────────────────────────────────────────────────
-// 1. Scrape page text
-// 2. Extract company/role/skills/role-descriptions via Gemini (with profile)
-// 3. Auto-fill tracker + render JD analysis panel
 async function handleRescan() {
   const btn = el('btn-rescan');
   setBtnLoading(btn, true, '⏳ Scanning…');
   clearAnalysisPanel();
 
   try {
-    // Step 1 — scrape
     const scrapeRes = await sendMsg({ type: 'SCRAPE_JD' });
     if (!scrapeRes.success) { showToast(scrapeRes.error, 'error'); return; }
     state.jd = scrapeRes.jd;
     refreshJDStatus();
 
-    // Step 2 — extract meta (needs gemini key)
-    if (!state.settings.geminiKey) {
-      showToast('Add a Gemini API key in Settings to enable JD analysis.', 'error');
+    if (!state.settings.openRouterKey) {
+      showToast('Add an OpenRouter API key in Settings to enable JD analysis.', 'error');
       return;
     }
 
@@ -182,16 +179,14 @@ async function handleRescan() {
     const metaRes = await sendMsg({
       type:    'EXTRACT_JD_META',
       jd:      state.jd.text,
-      profile: state.profile,      // pass full profile
+      profile: state.profile,
     });
 
     if (!metaRes.success) { showToast(metaRes.error, 'error'); return; }
 
-    // Step 3 — populate tracker inputs
     if (metaRes.company) el('apply-company').value = metaRes.company;
     if (metaRes.role)    el('apply-role').value    = metaRes.role;
 
-    // Step 4 — render analysis panel
     renderAnalysisPanel(metaRes);
 
   } catch (e) { showToast(e.message, 'error'); }
@@ -201,7 +196,6 @@ async function handleRescan() {
 
 // ── JD Analysis Panel ──────────────────────────────────────────────────────────
 function renderAnalysisPanel(meta) {
-  // Skill pills — exact (green)
   const exactContainer = el('skills-exact');
   exactContainer.innerHTML = '';
   (meta.skillsExactMatch || []).forEach(skill => {
@@ -211,7 +205,6 @@ function renderAnalysisPanel(meta) {
     exactContainer.appendChild(pill);
   });
 
-  // Skill pills — close (amber)
   const closeContainer = el('skills-close');
   closeContainer.innerHTML = '';
   (meta.skillsCloseMatch || []).forEach(skill => {
@@ -221,7 +214,6 @@ function renderAnalysisPanel(meta) {
     closeContainer.appendChild(span);
   });
 
-  // Role descriptions
   const roleContainer = el('role-descriptions');
   roleContainer.innerHTML = '';
   const descriptions = meta.workExRoleDescriptions || {};
@@ -236,27 +228,26 @@ function renderAnalysisPanel(meta) {
     roleContainer.appendChild(card);
   });
 
-  // Show the panel
   el('jd-analysis').classList.remove('hidden');
 }
 
 function clearAnalysisPanel() {
   el('jd-analysis').classList.add('hidden');
-  el('skills-exact').innerHTML   = '';
-  el('skills-close').innerHTML   = '';
+  el('skills-exact').innerHTML      = '';
+  el('skills-close').innerHTML      = '';
   el('role-descriptions').innerHTML = '';
 }
 
 // ── Document Generation ────────────────────────────────────────────────────────
 async function generateDoc(type) {
   if (!state.jd) return showToast('Please scan a JD first.');
-  const isResume  = type === 'resume';
-  const btnId     = isResume ? 'btn-gen-resume' : 'btn-gen-cover';
-  const outId     = isResume ? 'resume-output'  : 'cover-output';
-  const codeId    = isResume ? 'resume-code'    : 'cover-code';
-  const msgType   = isResume ? 'GENERATE_RESUME' : 'GENERATE_COVER';
-  const label     = isResume ? '⬡ Resume'        : '✉ Cover Letter';
-  const tplKey    = isResume ? 'resumeTemplate'   : 'coverTemplate';
+  const isResume = type === 'resume';
+  const btnId    = isResume ? 'btn-gen-resume' : 'btn-gen-cover';
+  const outId    = isResume ? 'resume-output'  : 'cover-output';
+  const codeId   = isResume ? 'resume-code'    : 'cover-code';
+  const msgType  = isResume ? 'GENERATE_RESUME' : 'GENERATE_COVER';
+  const label    = isResume ? '⬡ Resume'        : '✉ Cover Letter';
+  const tplKey   = isResume ? 'resumeTemplate'  : 'coverTemplate';
 
   const btn = el(btnId);
   setBtnLoading(btn, true, '⏳ Generating…');
@@ -291,9 +282,7 @@ async function compileAndDownload(type) {
     const company = (el('apply-company')?.value || 'Company').trim().replace(/\s+/g, '_');
     const role    = (el('apply-role')?.value    || 'Role').trim().replace(/\s+/g, '_');
     const docType = type === 'resume' ? 'Resume' : 'CoverLetter';
-    const filename = `${name}_${docType}_${company}_${role}`;
-
-    const res = await sendMsg({ type:'COMPILE_AND_SAVE', latex, filename });
+    const res = await sendMsg({ type: 'COMPILE_AND_SAVE', latex, filename: `${name}_${docType}_${company}_${role}` });
     if (res.success) showToast(`✓ Saved ${res.filename}.pdf`, 'success');
     else showToast(res.error, 'error');
   } catch (e) { showToast(e.message, 'error'); }
@@ -301,6 +290,7 @@ async function compileAndDownload(type) {
 }
 
 // ── Chat ────────────────────────────────────────────────────────────────────────
+// Message type updated from ASK_GEMINI → ASK_AI
 async function sendChat() {
   const input = el('chat-input');
   const q = input.value.trim();
@@ -311,23 +301,26 @@ async function sendChat() {
 
   try {
     const res = await sendMsg({
-      type: 'ASK_GEMINI', question: q,
-      jd: state.jd?.text || '', profile: state.profile,
-      detailedMode: state.detailedMode, history: state.chatHistory,
+      type: 'ASK_AI',
+      question: q,
+      jd: state.jd?.text || '',
+      profile: state.profile,
+      detailedMode: state.detailedMode,
+      history: state.chatHistory,
     });
     removeBubble(typingId);
     const answer = res.success ? res.answer : '⚠ ' + res.error;
     if (res.success) {
-      state.chatHistory.push({ role:'user', content:q }, { role:'assistant', content:answer });
+      state.chatHistory.push({ role: 'user', content: q }, { role: 'assistant', content: answer });
       if (state.chatHistory.length > 20) state.chatHistory = state.chatHistory.slice(-20);
     }
     appendBubble('ai', answer, true);
-  } catch(e) { removeBubble(typingId); appendBubble('ai', '⚠ ' + e.message); }
+  } catch (e) { removeBubble(typingId); appendBubble('ai', '⚠ ' + e.message); }
 }
 
 function appendBubble(role, text, withCopy = false) {
   const container = el('chat-messages');
-  const id  = `bubble-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+  const id  = `bubble-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const div = document.createElement('div');
   div.className = `chat-msg chat-msg-${role}`;
   div.id = id;
@@ -352,16 +345,16 @@ async function logApplication() {
 
   const btn = el('btn-log');
   setBtnLoading(btn, true, '⏳ Logging…');
-  const [tab] = await chrome.tabs.query({ active:true, currentWindow:true });
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   try {
-    const res = await sendMsg({ type:'LOG_APPLICATION', company, role, status, notes, url:tab?.url||'' });
+    const res = await sendMsg({ type: 'LOG_APPLICATION', company, role, status, notes, url: tab?.url || '' });
     if (res.success) showFeedback(fb, `✓ Logged "${role}" at ${company}`, 'success');
     else showFeedback(fb, res.error, 'error');
-  } catch(e) { showFeedback(fb, e.message, 'error'); }
+  } catch (e) { showFeedback(fb, e.message, 'error'); }
   setBtnLoading(btn, false, '✓ Log Application');
 }
 
-// ─── JD Status Display ────────────────────────────────────────────────────────
+// ─── JD Status ────────────────────────────────────────────────────────────────
 function refreshJDStatus() {
   const statusEl  = el('jd-status');
   const statusTxt = el('jd-status-text');
@@ -387,35 +380,62 @@ function bindProfileTab() {
   uploadInput.addEventListener('change', () => {
     const file = uploadInput.files[0];
     if (!file) return;
-    el('resume-upload-name').textContent = file.name;
-    parseBtn.disabled = false;
+
+    // 1. Show loading text and KEEP BUTTON DISABLED while processing
+    el('resume-upload-name').textContent = 'Extracting text... ⏳';
+    parseBtn.disabled = true;
     state.parsedResumeText = null;
+
     const reader = new FileReader();
+
     if (file.type === 'application/pdf') {
       reader.readAsArrayBuffer(file);
-      reader.onload = () => {
-        const bytes = new Uint8Array(reader.result);
-        let text = '';
-        for (let i = 0; i < bytes.length; i++) {
-          const b = bytes[i];
-          if (b >= 32 && b < 127) text += String.fromCharCode(b);
-          else if (b === 10 || b === 13) text += '\n';
+      reader.onload = async () => {
+        try {
+          // Tell PDF.js where its worker is
+          pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+          
+          const loadingTask = pdfjsLib.getDocument({ data: reader.result });
+          const pdf = await loadingTask.promise;
+          let fullText = '';
+          
+          // Loop through every page and extract actual text
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            const pageText = textContent.items.map(item => item.str).join(' ');
+            fullText += pageText + '\n\n';
+          }
+          
+          state.parsedResumeText = fullText.slice(0, 12000);
+          
+          // 2. ENABLE BUTTON and show file name ONLY when done
+          el('resume-upload-name').textContent = file.name;
+          parseBtn.disabled = false;
+
+        } catch (error) {
+          console.error("PDF Parsing Error:", error);
+          el('resume-upload-name').textContent = 'Error reading PDF';
+          showFeedback(fb, 'Failed to extract text. Check Inspect > Console.', 'error');
         }
-        text = text.split('\n').filter(l => l.trim().length > 3 && /[a-zA-Z]/.test(l)).join('\n');
-        state.parsedResumeText = text.slice(0, 12000);
       };
     } else {
+      // Handle standard .txt files
       reader.readAsText(file);
-      reader.onload = () => { state.parsedResumeText = reader.result.slice(0, 12000); };
+      reader.onload = () => {
+        state.parsedResumeText = reader.result.slice(0, 12000);
+        el('resume-upload-name').textContent = file.name;
+        parseBtn.disabled = false;
+      };
     }
   });
 
   parseBtn.addEventListener('click', async () => {
     if (!state.parsedResumeText) return showFeedback(fb, 'File still loading, try again.', 'error');
-    if (!state.settings.geminiKey) return showFeedback(fb, 'Add Gemini API key in Settings.', 'error');
+    if (!state.settings.openRouterKey) return showFeedback(fb, 'Add an OpenRouter API key in Settings.', 'error');
     setBtnLoading(parseBtn, true, '⏳ Parsing…');
     try {
-      const res = await sendMsg({ type:'PARSE_RESUME', text: state.parsedResumeText });
+      const res = await sendMsg({ type: 'PARSE_RESUME', text: state.parsedResumeText });
       if (res.success) {
         state.profile = deepMergeProfile(res.profile);
         await chrome.storage.local.set({ profile: state.profile });
@@ -425,7 +445,7 @@ function bindProfileTab() {
       } else {
         showFeedback(fb, res.error, 'error');
       }
-    } catch(e) { showFeedback(fb, e.message, 'error'); }
+    } catch (e) { showFeedback(fb, e.message, 'error'); }
     setBtnLoading(parseBtn, false, '⬡ Parse & Auto-fill Profile');
   });
 
@@ -436,12 +456,10 @@ function deepMergeProfile(parsed) {
   const base = structuredClone(DEFAULT_PROFILE);
   if (parsed.personal) Object.assign(base.personal, parsed.personal);
   if (parsed.modules) {
-    // Array modules
-    ['education','workExperience','projects','achievements','courses'].forEach(key => {
+    ['education', 'workExperience', 'projects', 'achievements', 'courses'].forEach(key => {
       if (Array.isArray(parsed.modules[key]) && parsed.modules[key].length)
         base.modules[key] = parsed.modules[key];
     });
-    // Skills (object of arrays)
     if (parsed.modules.skills) {
       SKILL_GROUPS.forEach(g => {
         if (Array.isArray(parsed.modules.skills[g.key]) && parsed.modules.skills[g.key].length)
@@ -457,7 +475,7 @@ function renderProfileModules() {
   const container = el('profile-modules');
   container.innerHTML = '';
 
-  // Personal panel
+  // Personal
   const personalPanel = document.createElement('div');
   personalPanel.className = 'module-panel';
   personalPanel.innerHTML = `
@@ -467,28 +485,24 @@ function renderProfileModules() {
     </div>
     <div class="module-body" id="module-body-personal">
       <div class="entry-row">
-        <input class="input" placeholder="Full Name"  data-field="personal.name"     />
-        <input class="input" placeholder="Email"      data-field="personal.email"    />
+        <input class="input" placeholder="Full Name"  data-field="personal.name" />
+        <input class="input" placeholder="Email"      data-field="personal.email" />
       </div>
       <div class="entry-row">
-        <input class="input" placeholder="Phone"      data-field="personal.phone"    />
+        <input class="input" placeholder="Phone"      data-field="personal.phone" />
         <input class="input" placeholder="Location"   data-field="personal.location" />
       </div>
       <div class="entry-row">
         <input class="input" placeholder="LinkedIn"   data-field="personal.linkedin" />
-        <input class="input" placeholder="GitHub"     data-field="personal.github"   />
+        <input class="input" placeholder="GitHub"     data-field="personal.github" />
       </div>
       <input class="input" placeholder="Portfolio / Website" data-field="personal.website" />
     </div>`;
   container.appendChild(personalPanel);
 
-  // Skills panel (special — object of arrays, not array of objects)
   container.appendChild(buildSkillsPanel());
-
-  // Array-based modules
   MODULE_CONFIG.forEach(mod => container.appendChild(buildModulePanel(mod)));
 
-  // Attach collapse toggles to all headers in this container
   container.querySelectorAll('.module-header').forEach(header => {
     header.addEventListener('click', () => {
       const body = el(`module-body-${header.dataset.module}`);
@@ -500,7 +514,6 @@ function renderProfileModules() {
   });
 }
 
-// ── Skills Panel ───────────────────────────────────────────────────────────────
 function buildSkillsPanel() {
   const panel = document.createElement('div');
   panel.className = 'module-panel';
@@ -513,7 +526,6 @@ function buildSkillsPanel() {
       <div class="skills-grid" id="skills-grid"></div>
     </div>`;
 
-  // Build each skill group section
   const grid = panel.querySelector('#skills-grid');
   SKILL_GROUPS.forEach(group => {
     const section = document.createElement('div');
@@ -524,23 +536,17 @@ function buildSkillsPanel() {
       <div class="skill-tags-row" id="skill-tags-${group.key}"></div>
       <div class="skill-add-row">
         <input class="input" id="skill-input-${group.key}" placeholder="Add ${group.label.split(' ')[0].toLowerCase()}…" />
-        <button class="btn-add-skill" data-group="${group.key}" title="Add">+</button>
+        <button class="btn-add-skill" data-group="${group.key}">+</button>
       </div>`;
     grid.appendChild(section);
 
-    // Add skill on button click
     section.querySelector('.btn-add-skill').addEventListener('click', () => {
       const input = el(`skill-input-${group.key}`);
       addSkillTag(group.key, input.value.trim());
       input.value = '';
     });
-    // Add skill on Enter key
     section.querySelector(`#skill-input-${group.key}`).addEventListener('keydown', e => {
-      if (e.key === 'Enter') {
-        addSkillTag(group.key, e.target.value.trim());
-        e.target.value = '';
-        e.preventDefault();
-      }
+      if (e.key === 'Enter') { addSkillTag(group.key, e.target.value.trim()); e.target.value = ''; e.preventDefault(); }
     });
   });
 
@@ -552,7 +558,7 @@ function addSkillTag(groupKey, value) {
   const container = el(`skill-tags-${groupKey}`);
   const tag = document.createElement('div');
   tag.className = 'skill-tag';
-  tag.innerHTML = `<span>${escHtml(value)}</span><button class="skill-tag-remove" title="Remove">✕</button>`;
+  tag.innerHTML = `<span>${escHtml(value)}</span><button class="skill-tag-remove">✕</button>`;
   tag.querySelector('.skill-tag-remove').addEventListener('click', () => tag.remove());
   container.appendChild(tag);
 }
@@ -562,8 +568,7 @@ function populateSkillTags() {
     const container = el(`skill-tags-${group.key}`);
     if (!container) return;
     container.innerHTML = '';
-    const skills = state.profile.modules?.skills?.[group.key] || [];
-    skills.forEach(skill => addSkillTag(group.key, skill));
+    (state.profile.modules?.skills?.[group.key] || []).forEach(s => addSkillTag(group.key, s));
   });
 }
 
@@ -578,7 +583,6 @@ function collectSkillsFromUI() {
   return skills;
 }
 
-// ── Array-based module panels ──────────────────────────────────────────────────
 function buildModulePanel(mod) {
   const panel = document.createElement('div');
   panel.className = 'module-panel';
@@ -589,7 +593,7 @@ function buildModulePanel(mod) {
     </div>
     <div class="module-body" id="module-body-${mod.key}">
       <div id="entries-${mod.key}"></div>
-      <button class="btn-add-entry" data-module="${mod.key}">+ Add ${mod.label.replace(/s$/,'')}</button>
+      <button class="btn-add-entry">+ Add ${mod.label.replace(/s$/, '')}</button>
     </div>`;
   panel.querySelector('.btn-add-entry').addEventListener('click', () => {
     addModuleEntry(mod, el(`entries-${mod.key}`));
@@ -606,25 +610,25 @@ function addModuleEntry(mod, container, data = {}) {
 
   let html = '';
   fullFields.forEach(f => {
-    html += `<input class="input" placeholder="${f.placeholder}" data-key="${f.key}" value="${escAttr(data[f.key]||'')}" />`;
+    html += `<input class="input" placeholder="${f.placeholder}" data-key="${f.key}" value="${escAttr(data[f.key] || '')}" />`;
   });
   for (let i = 0; i < halfFields.length; i += 2) {
-    const a = halfFields[i], b = halfFields[i+1];
+    const a = halfFields[i], b = halfFields[i + 1];
     html += `<div class="entry-row">
-      <input class="input" placeholder="${a.placeholder}" data-key="${a.key}" value="${escAttr(data[a.key]||'')}" />
-      ${b ? `<input class="input" placeholder="${b.placeholder}" data-key="${b.key}" value="${escAttr(data[b.key]||'')}" />` : ''}
+      <input class="input" placeholder="${a.placeholder}" data-key="${a.key}" value="${escAttr(data[a.key] || '')}" />
+      ${b ? `<input class="input" placeholder="${b.placeholder}" data-key="${b.key}" value="${escAttr(data[b.key] || '')}" />` : ''}
     </div>`;
   }
 
   if (mod.bullets) {
-    const bullets = (data.bullets?.length) ? data.bullets : [''];
+    const bullets = data.bullets?.length ? data.bullets : [''];
     html += `
       <div class="bullets-label">Bullet Points</div>
       <div class="bullets-container">${bullets.map(bulletRowHtml).join('')}</div>
       <button class="btn-add-bullet" type="button">+</button>`;
   }
 
-  entryEl.innerHTML = `<button class="btn-remove-entry" title="Remove">✕</button>${html}`;
+  entryEl.innerHTML = `<button class="btn-remove-entry">✕</button>${html}`;
   entryEl.querySelector('.btn-remove-entry').addEventListener('click', () => entryEl.remove());
 
   if (mod.bullets) {
@@ -652,14 +656,11 @@ function bulletRowHtml(value) {
 }
 
 function populateProfileForm() {
-  // Personal fields
   Object.entries(state.profile.personal || {}).forEach(([key, val]) => {
     const input = document.querySelector(`[data-field="personal.${key}"]`);
     if (input) input.value = val;
   });
-  // Skills
   populateSkillTags();
-  // Array modules
   MODULE_CONFIG.forEach(mod => {
     const entries   = state.profile.modules[mod.key] || [];
     const container = el(`entries-${mod.key}`);
@@ -670,15 +671,11 @@ function populateProfileForm() {
 }
 
 async function saveProfile() {
-  // Personal
   const personal = {};
   document.querySelectorAll('[data-field^="personal."]').forEach(input => {
-    personal[input.dataset.field.replace('personal.','')] = input.value.trim();
+    personal[input.dataset.field.replace('personal.', '')] = input.value.trim();
   });
-  // Skills
-  const skills = collectSkillsFromUI();
-  // Array modules
-  const modules = { skills };
+  const modules = { skills: collectSkillsFromUI() };
   MODULE_CONFIG.forEach(mod => {
     const container = el(`entries-${mod.key}`);
     if (!container) return;
@@ -693,7 +690,6 @@ async function saveProfile() {
 
   state.profile = { personal, modules };
   await chrome.storage.local.set({ profile: state.profile });
-
   const btn = el('btn-save-profile');
   const orig = btn.textContent;
   btn.textContent = '✓ Saved!';
@@ -716,6 +712,10 @@ function bindSettingsTab() {
     });
   });
 
+  // Live model resolution preview — updates as the user types
+  el('s-text-model').addEventListener('input', updateModelPreview);
+  el('s-latex-model').addEventListener('input', updateModelPreview);
+
   el('btn-save-settings').addEventListener('click', saveSettings);
 }
 
@@ -730,23 +730,51 @@ function bindTemplateUpload(inputId, nameId, previewId, loadedId, storageKey) {
   });
 }
 
+/**
+ * Mirror of resolveModel() from background.js, kept in sync.
+ * Used purely for the live Settings preview — does NOT make API calls.
+ */
+function resolveModelPreview(taskType, textModel, latexModel) {
+  const text  = textModel.trim();
+  const latex = latexModel.trim();
+  if (taskType === 'text') {
+    if (text)  return text;
+    if (latex) return latex;
+    return DEFAULT_TEXT_MODEL;
+  }
+  if (latex) return latex;
+  if (text)  return text;
+  return DEFAULT_LATEX_MODEL;
+}
+
+function updateModelPreview() {
+  const textModel  = el('s-text-model').value;
+  const latexModel = el('s-latex-model').value;
+  el('resolved-text-model').textContent  = resolveModelPreview('text',  textModel, latexModel);
+  el('resolved-latex-model').textContent = resolveModelPreview('latex', textModel, latexModel);
+}
+
 function populateSettingsForm() {
   const s = state.settings;
-  setVal('s-or-key',   s.openRouterKey);
-  setVal('s-or-model', s.openRouterModel || 'anthropic/claude-3.5-sonnet');
-  setVal('s-gem-key',  s.geminiKey);
-  setVal('s-sheets',   s.sheetsUrl);
+  setVal('s-or-key',     s.openRouterKey);
+  setVal('s-text-model', s.textModel);
+  setVal('s-latex-model',s.latexModel);
+  setVal('s-sheets',     s.sheetsUrl);
+
   if (s.resumeTemplate) { el('resume-tpl-loaded').textContent = '✓ resume.tex (cached)'; el('resume-tpl-preview').classList.remove('hidden'); }
   if (s.coverTemplate)  { el('cover-tpl-loaded').textContent  = '✓ cover.tex (cached)';  el('cover-tpl-preview').classList.remove('hidden'); }
+
+  // Render initial resolution preview
+  updateModelPreview();
 }
 
 async function saveSettings() {
   state.settings = {
-    ...state.settings,               // preserve cached templates
-    openRouterKey:   el('s-or-key').value.trim(),
-    openRouterModel: el('s-or-model').value.trim(),
-    geminiKey:       el('s-gem-key').value.trim(),
-    sheetsUrl:       el('s-sheets').value.trim(),
+    ...state.settings,         // preserve cached templates
+    openRouterKey: el('s-or-key').value.trim(),
+    textModel:     el('s-text-model').value.trim(),
+    latexModel:    el('s-latex-model').value.trim(),
+    sheetsUrl:     el('s-sheets').value.trim(),
   };
   await chrome.storage.local.set({ settings: state.settings });
   showFeedback(el('settings-feedback'), '✓ Settings saved', 'success');
@@ -757,7 +785,7 @@ function bindStorageTab() {
   el('btn-refresh-storage').addEventListener('click', refreshStorageExplorer);
   el('btn-clear-all-storage').addEventListener('click', async () => {
     if (!confirm('Clear ALL storage? This deletes your profile, settings, and JD.')) return;
-    await sendMsg({ type:'CLEAR_ALL_STORAGE' });
+    await sendMsg({ type: 'CLEAR_ALL_STORAGE' });
     state.profile  = structuredClone(DEFAULT_PROFILE);
     state.settings = {};
     state.jd       = null;
@@ -768,7 +796,7 @@ function bindStorageTab() {
 }
 
 async function refreshStorageExplorer() {
-  const res  = await sendMsg({ type:'GET_ALL_STORAGE' });
+  const res  = await sendMsg({ type: 'GET_ALL_STORAGE' });
   const list = el('storage-list');
   list.innerHTML = '';
   const entries = Object.entries(res.data || {});
@@ -791,7 +819,7 @@ async function refreshStorageExplorer() {
       </div>
       <div class="storage-preview">${escHtml(str.slice(0, 120))}${str.length > 120 ? '…' : ''}</div>`;
     row.querySelector('.btn-delete-key').addEventListener('click', async e => {
-      await sendMsg({ type:'DELETE_STORAGE_KEY', key: e.target.dataset.key });
+      await sendMsg({ type: 'DELETE_STORAGE_KEY', key: e.target.dataset.key });
       row.remove();
     });
     list.appendChild(row);
@@ -799,7 +827,7 @@ async function refreshStorageExplorer() {
 }
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
-function el(id)   { return document.getElementById(id); }
+function el(id)  { return document.getElementById(id); }
 function setVal(id, val) { const e = el(id); if (e && val != null) e.value = val; }
 
 function sendMsg(msg) {
@@ -827,18 +855,18 @@ function showToast(msg, type = 'error') {
   setTimeout(() => t.remove(), 4000);
 }
 
-function showFeedback(el, msg, type) {
-  el.textContent = msg;
-  el.className = `feedback ${type}`;
-  el.classList.remove('hidden');
-  setTimeout(() => el.classList.add('hidden'), 3500);
+function showFeedback(feedbackEl, msg, type) {
+  feedbackEl.textContent = msg;
+  feedbackEl.className = `feedback ${type}`;
+  feedbackEl.classList.remove('hidden');
+  setTimeout(() => feedbackEl.classList.add('hidden'), 3500);
 }
 
 function fmtBytes(b) {
   if (b < 1024) return `${b} B`;
-  if (b < 1048576) return `${(b/1024).toFixed(1)} KB`;
-  return `${(b/1048576).toFixed(2)} MB`;
+  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / 1048576).toFixed(2)} MB`;
 }
 
-function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escAttr(s) { return String(s||'').replace(/"/g,'&quot;'); }
+function escHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function escAttr(s) { return String(s || '').replace(/"/g, '&quot;'); }

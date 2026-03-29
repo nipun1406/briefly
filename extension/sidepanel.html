@@ -46,33 +46,22 @@
       <div id="jd-preview" class="jd-preview hidden"></div>
     </div>
 
-    <!-- ── JD Analysis (populated after Re-scan) ── -->
+    <!-- JD Analysis (populated after Re-scan) -->
     <div id="jd-analysis" class="panel hidden">
       <div class="panel-header">
         <h2>JD Analysis</h2>
-        <span class="badge">Gemini</span>
+        <span class="badge">OpenRouter</span>
       </div>
-
-      <!-- Skill match pills -->
       <div class="analysis-section">
-        <div class="analysis-label">
-          <span class="dot dot-green"></span>Exact Skill Matches
-        </div>
+        <div class="analysis-label"><span class="dot dot-green"></span>Exact Skill Matches</div>
         <div id="skills-exact" class="pills-row"></div>
       </div>
-
       <div class="analysis-section">
-        <div class="analysis-label">
-          <span class="dot dot-amber"></span>Close Skill Matches
-        </div>
+        <div class="analysis-label"><span class="dot dot-amber"></span>Close Skill Matches</div>
         <div id="skills-close" class="pills-row"></div>
       </div>
-
-      <!-- Role descriptions -->
       <div class="analysis-section" id="role-desc-section">
-        <div class="analysis-label">
-          <span class="dot dot-blue"></span>Tailored Role Summaries
-        </div>
+        <div class="analysis-label"><span class="dot dot-blue"></span>Tailored Role Summaries</div>
         <div id="role-descriptions" class="role-desc-list"></div>
       </div>
     </div>
@@ -109,7 +98,7 @@
     <!-- Q&A Chat -->
     <div class="panel chat-panel">
       <div class="panel-header">
-        <h2>Quick Q&amp;A <span class="badge">Gemini</span></h2>
+        <h2>Quick Q&amp;A <span class="badge">OpenRouter</span></h2>
         <label class="toggle-label">
           <input type="checkbox" id="detailed-toggle" />
           <span class="toggle-track"></span>
@@ -151,11 +140,10 @@
   ══════════════════════════════════════════════════════════ -->
   <section id="tab-profile" class="tab-content">
 
-    <!-- Resume upload / parser -->
     <div class="panel">
       <div class="panel-header">
         <h2>Import from Resume</h2>
-        <span class="badge">Gemini</span>
+        <span class="badge">OpenRouter</span>
       </div>
       <p class="hint-text">Upload a PDF or TXT resume to auto-fill your profile.</p>
       <label class="file-upload-label">
@@ -167,7 +155,6 @@
       <div id="parse-feedback" class="feedback hidden"></div>
     </div>
 
-    <!-- Profile modules (dynamically rendered) -->
     <div id="profile-modules" class="profile-modules"></div>
 
     <div class="panel">
@@ -180,26 +167,82 @@
        TAB: SETTINGS
   ══════════════════════════════════════════════════════════ -->
   <section id="tab-settings" class="tab-content">
+
+    <!-- API Key -->
     <div class="panel">
-      <h3 class="section-title">API Keys</h3>
+      <h3 class="section-title">API Key</h3>
       <div class="form-group">
         <label>OpenRouter API Key</label>
-        <input type="password" id="s-or-key"   class="input" placeholder="sk-or-…" />
-      </div>
-      <div class="form-group">
-        <label>OpenRouter Model</label>
-        <input type="text"     id="s-or-model" class="input" placeholder="anthropic/claude-3.5-sonnet" />
-      </div>
-      <div class="form-group">
-        <label>Gemini API Key</label>
-        <input type="password" id="s-gem-key"  class="input" placeholder="AIza…" />
-      </div>
-      <div class="form-group">
-        <label>Google Script Web App URL</label>
-        <input type="url"      id="s-sheets"   class="input" placeholder="https://script.google.com/…" />
+        <input type="password" id="s-or-key" class="input" placeholder="sk-or-…" />
       </div>
     </div>
 
+    <!-- Dual Model Config -->
+    <div class="panel">
+      <h3 class="section-title">Model Configuration</h3>
+      <p class="hint-text settings-hint">
+        All AI tasks route through OpenRouter. You can use one model for everything
+        or specify separate models for text and LaTeX tasks.
+        If only one field is filled, it is used for both task types automatically.
+      </p>
+
+      <div class="form-group">
+        <label>
+          Text Tasks Model
+          <span class="label-tag">Parsing · JD Analysis · Chat</span>
+        </label>
+        <input
+          type="text"
+          id="s-text-model"
+          class="input input-mono"
+          placeholder="anthropic/claude-3.5-sonnet"
+        />
+      </div>
+
+      <div class="model-divider">
+        <span class="model-divider-line"></span>
+        <span class="model-divider-label">or separate LaTeX model</span>
+        <span class="model-divider-line"></span>
+      </div>
+
+      <div class="form-group">
+        <label>
+          LaTeX Tasks Model
+          <span class="label-tag">Resume · Cover Letter</span>
+        </label>
+        <input
+          type="text"
+          id="s-latex-model"
+          class="input input-mono"
+          placeholder="anthropic/claude-3.5-sonnet"
+        />
+      </div>
+
+      <!-- Live resolution preview -->
+      <div class="model-resolution-box" id="model-resolution-box">
+        <div class="resolution-row">
+          <span class="resolution-dot dot-blue"></span>
+          <span class="resolution-label">Text tasks will use:</span>
+          <code id="resolved-text-model" class="resolution-value">anthropic/claude-3.5-sonnet</code>
+        </div>
+        <div class="resolution-row">
+          <span class="resolution-dot dot-blue"></span>
+          <span class="resolution-label">LaTeX tasks will use:</span>
+          <code id="resolved-latex-model" class="resolution-value">anthropic/claude-3.5-sonnet</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- Integrations -->
+    <div class="panel">
+      <h3 class="section-title">Integrations</h3>
+      <div class="form-group">
+        <label>Google Script Web App URL</label>
+        <input type="url" id="s-sheets" class="input" placeholder="https://script.google.com/…" />
+      </div>
+    </div>
+
+    <!-- LaTeX Templates -->
     <div class="panel">
       <h3 class="section-title">LaTeX Templates</h3>
       <div class="form-group">
@@ -232,6 +275,7 @@
       <button id="btn-save-settings" class="btn btn-primary w-full">Save Settings</button>
       <div id="settings-feedback" class="feedback hidden"></div>
     </div>
+
   </section>
 
   <!-- ══════════════════════════════════════════════════════
@@ -252,6 +296,7 @@
   </section>
 
 </div><!-- #app -->
+<script src="pdf.min.js"></script>
 <script src="sidepanel.js"></script>
 </body>
 </html>

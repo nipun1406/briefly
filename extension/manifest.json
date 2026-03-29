@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Briefly",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "AI-powered job application assistant — resume generation, cover letters, application tracking.",
   "permissions": [
     "sidePanel",

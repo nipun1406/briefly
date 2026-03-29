@@ -1,94 +1,138 @@
-# Briefly V2.1 — Change Log & Reference
+# Briefly v2.1.1 — 100% OpenRouter Architecture
 
-## What Changed in V2.1
+## Overview
 
-### 1. `prompts.js` (new file)
-All AI prompts are now centralised in a single ES module. Import them anywhere with:
-```js
-import { Prompts, GUARDRAILS } from './prompts.js';
-```
-Prompts covered: `extractJDMeta`, `parseResume`, `chat`, `generateResume`, `generateCoverLetter`.
-
-### 2. `manifest.json`
-- `"type": "module"` added to the `background` block so the service worker can use ES module `import` syntax.
-
-### 3. `background.js`
-- Imports `Prompts` from `./prompts.js` — all prompt strings removed from background.
-- `callGemini` gains a `requireJson` parameter. When `true`, `generationConfig.responseMimeType` is set to `"application/json"`, activating Gemini's native JSON mode (no more manual JSON stripping).
-- `handleExtractJDMeta` now accepts `msg.profile` and passes both `jd` and `profile` into `Prompts.extractJDMeta(jd, profile)`.
-- `REFINE_EXPERIENCE` handler and all related logic **removed**.
-
-### 4. Profile Tab — Skills Module
-A dedicated **Skills** panel is now rendered inside the Profile tab with three tag-input groups:
-- **Languages** — Python, TypeScript, Go, …
-- **Frameworks & Libraries** — React, FastAPI, PyTorch, …
-- **Tools & Platforms** — Docker, AWS, GitHub Actions, …
-
-Tags are added by pressing **Enter** or clicking **+**, and removed by clicking **✕** on each tag. The skills are saved as `profile.modules.skills.{ languages, frameworks, tools }` — matching the `parseResume` schema in `prompts.js`.
-
-When **Parse & Auto-fill Profile** is used, Gemini automatically populates all three skill groups.
-
-### 5. Apply Tab — JD Analysis Panel
-After **Re-scan**, a new **JD Analysis** panel appears (or updates) with:
-
-| Section | Colour | Content |
-|---|---|---|
-| Exact Skill Matches | 🟢 Green pills | Skills in your profile that appear verbatim in the JD |
-| Close Skill Matches | 🟡 Amber pills | Skills in your profile closely related to JD requirements |
-| Tailored Role Summaries | 🔵 Blue cards | A 2–3 sentence description per work experience role, tailored to the JD |
-
-The **Company** and **Role** tracker inputs are still auto-filled as before.
-
-### 6. Tailored Bullets — Removed
-The old "Refine Experience" / "Tailored Bullets" panel is gone. The `workExRoleDescriptions` from `extractJDMeta` replaces it with a richer, JD-aware narrative per role.
+Version 2.1.1 removes the Google Gemini API entirely. Every AI task — parsing, analysis, chat, and LaTeX generation — now routes exclusively through **OpenRouter**. This gives you a single API key, a unified billing dashboard, and the freedom to swap any underlying model at any time without touching code.
 
 ---
 
-## File Structure (Extension Folder)
+## What Changed in v2.1.1
+
+| Area | Change |
+|---|---|
+| `manifest.json` | Version bumped to `2.1.1` |
+| `background.js` | `callGemini` deleted; `GEMINI_BASE` / `GEMINI_MODEL` constants removed; single `callOpenRouter()` function handles all tasks; `handleGeminiChat` renamed `handleChat`; message type `ASK_GEMINI` → `ASK_AI` |
+| `sidepanel.html` | Gemini API Key input removed; single model input replaced with two (Text Tasks / LaTeX Tasks) + live resolution preview; badges updated to "OpenRouter" |
+| `sidepanel.css` | New styles: `.label-tag`, `.model-divider`, `.model-resolution-box`, `.input-mono` |
+| `sidepanel.js` | `saveSettings` / `loadSettings` updated to `openRouterKey`, `textModel`, `latexModel`; all `geminiKey` references removed; chat sends `ASK_AI`; live model-preview logic added |
+
+---
+
+## Settings: Dual-Model Configuration
+
+Open the **Settings** tab. You will find:
+
+```
+┌─────────────────────────────────────────┐
+│  API Key                                │
+│  OpenRouter API Key   [sk-or-…        ] │
+├─────────────────────────────────────────┤
+│  Model Configuration                    │
+│                                         │
+│  Text Tasks Model                       │
+│  (Parsing · JD Analysis · Chat)         │
+│  [anthropic/claude-3.5-sonnet         ] │
+│                                         │
+│  ─────── or separate LaTeX model ────── │
+│                                         │
+│  LaTeX Tasks Model                      │
+│  (Resume · Cover Letter)                │
+│  [anthropic/claude-3.5-sonnet         ] │
+│                                         │
+│  ┌─ Live Preview ──────────────────────┐│
+│  │ ● Text tasks will use:  <model>    ││
+│  │ ● LaTeX tasks will use: <model>    ││
+│  └────────────────────────────────────┘│
+└─────────────────────────────────────────┘
+```
+
+The **Live Preview** box updates in real time as you type, showing exactly which model will be used for each task type based on the fallback rules below.
+
+---
+
+## Model Fallback Logic
+
+The fallback rules are identical in both `background.js` (actual execution) and `sidepanel.js` (preview display), keeping them always in sync.
+
+```
+resolveModel(taskType, { textModel, latexModel })
+```
+
+| Text Model | LaTeX Model | Text tasks use     | LaTeX tasks use    |
+|------------|-------------|--------------------|--------------------|
+| filled     | filled      | textModel          | latexModel         |
+| filled     | **empty**   | textModel          | **textModel**      |
+| **empty**  | filled      | **latexModel**     | latexModel         |
+| **empty**  | **empty**   | default (Sonnet)   | default (Sonnet)   |
+
+**TL;DR — one model for everything:** Fill only the Text Tasks field. The fallback rule will automatically use it for LaTeX generation too. Leave both empty and the hardcoded defaults (`anthropic/claude-3.5-sonnet`) are used for all tasks.
+
+**Recommended split:** If you want to save cost on bulk JSON tasks while using a more capable model for document generation:
+- Text Tasks: `google/gemini-flash-1.5` (fast, cheap, good at structured output)
+- LaTeX Tasks: `anthropic/claude-3.5-sonnet` (better at following format constraints)
+
+---
+
+## JSON Safety Net
+
+Since OpenRouter does not guarantee JSON-only output (unlike Gemini's `responseMimeType` flag), both `handleParseResume` and `handleExtractJDMeta` strip markdown fences before parsing:
+
+```js
+const cleanJson = raw.replace(/```json\n?|```/g, '').trim();
+const result    = JSON.parse(cleanJson);
+```
+
+This handles cases where a model wraps its JSON response in a code block.
+
+---
+
+## Architecture: All Requests
+
+```
+sidepanel.js  ──message──▶  background.js
+                                │
+                                ├─ resolveModel('text',  settings)
+                                │       ↓
+                                │  PARSE_RESUME     ─▶ OpenRouter
+                                │  EXTRACT_JD_META  ─▶ OpenRouter
+                                │  ASK_AI           ─▶ OpenRouter
+                                │
+                                └─ resolveModel('latex', settings)
+                                        ↓
+                                   GENERATE_RESUME  ─▶ OpenRouter
+                                   GENERATE_COVER   ─▶ OpenRouter
+```
+
+---
+
+## Files Changed in This Update
+
+Replace these files in your extension folder. All other files (`prompts.js`, `content.js`, `sidepanel.css` structure, `icons/`) carry over from v3/v2 unchanged, except `sidepanel.css` which has new model-config styles merged in.
 
 ```
 extension/
-├── manifest.json       ← "type": "module" added to background
-├── background.js       ← ES module; imports Prompts; no REFINE_EXPERIENCE
-├── prompts.js          ← NEW: all AI prompt builders
-├── content.js          ← unchanged
-├── sidepanel.html      ← JD Analysis section; Skills in Profile; no Tailored Bullets
-├── sidepanel.css       ← pill, role-card, skill-tag styles added
-├── sidepanel.js        ← Skills module; JD analysis rendering; refine logic removed
-└── icons/
+├── manifest.json      ← version 2.1.1
+├── background.js      ← OpenRouter-only; resolveModel(); no Gemini
+├── sidepanel.html     ← dual model inputs; no Gemini key field
+├── sidepanel.css      ← new model config styles
+├── sidepanel.js       ← textModel/latexModel settings; ASK_AI; live preview
+└── README.md          ← this file
 ```
+
+The Docker compiler service and Google Apps Script are **unchanged**.
 
 ---
 
-## Gemini JSON Mode
+## OpenRouter Model IDs
 
-`callGemini(..., requireJson = true)` sets:
-```json
-{ "responseMimeType": "application/json" }
-```
-This tells Gemini to return a guaranteed-valid JSON string — no markdown fences, no preamble. Used for `EXTRACT_JD_META` and `PARSE_RESUME`. The `chat` path keeps `requireJson = false`.
+Any model available on OpenRouter works. Some useful options:
 
----
+| Use case | Model ID |
+|---|---|
+| Default (balanced) | `anthropic/claude-3.5-sonnet` |
+| Fast / cheap text | `google/gemini-flash-1.5` |
+| DeepSeek (cost-effective) | `deepseek/deepseek-chat` |
+| Powerful LaTeX | `anthropic/claude-opus-4-5` |
+| Local-style privacy | `meta-llama/llama-3.1-70b-instruct` |
 
-## Re-scan Flow (V2.1)
-
-```
-Click ↻ Re-scan
-  │
-  ├─ SCRAPE_JD        → background extracts page text, stores jd
-  │
-  └─ EXTRACT_JD_META  → Gemini (JSON mode) analyses jd + full profile
-       │
-       ├─ company, role          → auto-fill tracker inputs
-       ├─ skillsExactMatch       → green pills
-       ├─ skillsCloseMatch       → amber pills
-       └─ workExRoleDescriptions → blue role summary cards
-```
-
----
-
-## Notes
-
-- The background service worker is now an **ES Module**. This means you cannot use `importScripts()` inside it — use `import` statements at the top level only.
-- Skills entered manually in the Profile tab are included in the profile sent to `extractJDMeta`, so the skill-matching analysis is always based on your complete, up-to-date profile.
-- The Docker LaTeX compiler (`docker/`) and Google Apps Script (`sheets/code.gs`) are **unchanged** from V2.
+Browse the full list at [openrouter.ai/models](https://openrouter.ai/models).
