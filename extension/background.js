@@ -190,11 +190,14 @@ async function handleParseResume(msg, sendResponse) {
 async function handleGenerateResume(msg, sendResponse) {
   try {
     const settings = await getSettings();
+    const personalization = Object.prototype.hasOwnProperty.call(msg, 'personalization')
+      ? msg.personalization
+      : (settings.personalizationNotes || '');
     const prompt   = Prompts.generateResume(
       msg.profile,
       msg.jd,
       msg.latexTemplate || settings.resumeTemplate || '',
-      msg.personalization || settings.personalizationNotes || ''
+      personalization
     );
     const latex    = await callAI(settings, {
       systemPrompt: prompt.system,
@@ -210,11 +213,14 @@ async function handleGenerateResume(msg, sendResponse) {
 async function handleGenerateCover(msg, sendResponse) {
   try {
     const settings = await getSettings();
+    const personalization = Object.prototype.hasOwnProperty.call(msg, 'personalization')
+      ? msg.personalization
+      : (settings.personalizationNotes || '');
     const prompt   = Prompts.generateCoverLetter(
       msg.profile,
       msg.jd,
       msg.latexTemplate || settings.coverTemplate || '',
-      msg.personalization || settings.personalizationNotes || ''
+      personalization
     );
     const latex    = await callAI(settings, {
       systemPrompt: prompt.system,

@@ -32,6 +32,12 @@ const SKILL_GROUPS = [
   { key: 'tools',      label: 'Tools & Platforms' },
 ];
 
+const JOB_PAGE_HINTS = [
+  'job', 'jobs', 'career', 'careers', 'opening', 'openings', 'position', 'positions',
+  'apply', 'application', 'greenhouse', 'lever', 'workday', 'smartrecruiters',
+  'ashby', 'myworkdayjobs', 'icims', 'job-boards',
+];
+
 const MODULE_CONFIG = [
   {
     key: 'education', label: 'Education', icon: '🎓',
@@ -91,9 +97,11 @@ const state = {
   profile:          structuredClone(DEFAULT_PROFILE),
   settings:         {},
   jd:               null,
+  activeTab:        null,
   chatHistory:      [],
   detailedMode:     false,
   parsedResumeText: null,
+  autoSync:         { inflightUrl: '', suppressedUrl: '' },
 };
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
@@ -102,12 +110,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderProfileModules();
   populateProfileForm();
   populateSettingsForm();
-  refreshJDStatus();
   bindTabNav();
   bindApplicationTab();
   bindProfileTab();
   bindSettingsTab();
   bindStorageTab();
+  bindActiveTabSync();
+  await syncActiveTabContext();
+  refreshJDStatus();
+  refreshWorkflowStatus();
 });
 
 async function loadStorage() {
@@ -148,23 +159,149 @@ function getMissingProviderMessage() {
 function bindTabNav() {
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-      btn.classList.add('active');
-      el(`tab-${btn.dataset.tab}`).classList.add('active');
-      if (btn.dataset.tab === 'storage') refreshStorageExplorer();
+      openTab(btn.dataset.tab);
     });
   });
 }
 
+function openTab(tabName) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === `tab-${tabName}`));
+  if (tabName === 'storage') refreshStorageExplorer();
+}
+
+function normalizeTabUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    return parsed.toString();
+  } catch (_) {
+    return String(url);
+  }
+}
+
+function isHttpUrl(url) {
+  return /^https?:\/\//i.test(String(url || ''));
+}
+
+function looksLikeJobPage(url = '', title = '') {
+  const haystack = `${String(url || '').toLowerCase()} ${String(title || '').toLowerCase()}`;
+  return JOB_PAGE_HINTS.some(hint => haystack.includes(hint));
+}
+
+function hasFreshJDForActiveTab() {
+  if (!state.jd?.text) return false;
+  const jdUrl = normalizeTabUrl(state.jd.url);
+  const activeUrl = normalizeTabUrl(state.activeTab?.url);
+  return !activeUrl || jdUrl === activeUrl;
+}
+
+function isAutoSyncInFlightForActiveTab() {
+  const activeUrl = normalizeTabUrl(state.activeTab?.url);
+  return Boolean(activeUrl && state.autoSync.inflightUrl === activeUrl);
+}
+
+function snapshotActiveTab(tab) {
+  state.activeTab = tab
+    ? {
+        id: tab.id ?? null,
+        url: tab.url || '',
+        title: tab.title || '',
+        status: tab.status || '',
+      }
+    : null;
+}
+
+async function getActiveTab(tabHint = null) {
+  if (tabHint?.url) return tabHint;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
+}
+
+function resetJobDerivedState() {
+  state.chatHistory = [];
+  clearAnalysisPanel();
+  if (el('chat-messages')) el('chat-messages').innerHTML = '';
+  if (el('apply-company')) el('apply-company').value = '';
+  if (el('apply-role')) el('apply-role').value = '';
+  if (el('apply-notes')) el('apply-notes').value = '';
+  if (el('resume-code')) el('resume-code').textContent = '';
+  if (el('cover-code')) el('cover-code').textContent = '';
+  if (el('resume-output')) el('resume-output').classList.add('hidden');
+  if (el('cover-output')) el('cover-output').classList.add('hidden');
+}
+
+function bindActiveTabSync() {
+  chrome.tabs.onActivated.addListener(() => {
+    void syncActiveTabContext();
+  });
+
+  chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+    if (!tab.active) return;
+    if (!changeInfo.url && changeInfo.status !== 'complete') return;
+    void syncActiveTabContext({ tabHint: tab });
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) void syncActiveTabContext();
+  });
+}
+
+async function syncActiveTabContext({ tabHint = null } = {}) {
+  const tab = await getActiveTab(tabHint);
+  snapshotActiveTab(tab);
+
+  const activeUrl = normalizeTabUrl(tab?.url);
+  if (state.autoSync.suppressedUrl && state.autoSync.suppressedUrl !== activeUrl) {
+    state.autoSync.suppressedUrl = '';
+  }
+
+  refreshJDStatus();
+
+  if (!activeUrl || !isHttpUrl(tab?.url)) return;
+  if (!looksLikeJobPage(tab?.url, tab?.title)) return;
+  if (tab?.status && tab.status !== 'complete') return;
+  if (state.autoSync.suppressedUrl === activeUrl) return;
+  if (hasFreshJDForActiveTab()) return;
+  if (state.autoSync.inflightUrl === activeUrl) return;
+
+  resetJobDerivedState();
+  state.autoSync.inflightUrl = activeUrl;
+  refreshJDStatus();
+
+  try {
+    const scrapeRes = await sendMsg({ type: 'SCRAPE_JD' });
+    if (scrapeRes?.success && normalizeTabUrl(scrapeRes.jd?.url) === activeUrl) {
+      state.jd = scrapeRes.jd;
+    }
+  } catch (error) {
+    console.warn('Auto JD sync failed:', error);
+  } finally {
+    if (state.autoSync.inflightUrl === activeUrl) state.autoSync.inflightUrl = '';
+    refreshJDStatus();
+    refreshWorkflowStatus();
+  }
+}
+
 // ─── APPLICATION TAB ──────────────────────────────────────────────────────────
 function bindApplicationTab() {
+  el('btn-tailor-resume').addEventListener('click', tailorResumeForCurrentJob);
+  el('btn-open-profile').addEventListener('click', () => openTab('profile'));
+  el('btn-open-settings').addEventListener('click', () => openTab('settings'));
+  el('toggle-personalization').addEventListener('change', async e => {
+    state.settings.usePersonalization = e.target.checked;
+    await chrome.storage.local.set({ settings: state.settings });
+    refreshWorkflowStatus();
+  });
   el('btn-rescan').addEventListener('click', handleRescan);
   el('btn-clear-jd').addEventListener('click', async () => {
+    state.autoSync.suppressedUrl = normalizeTabUrl(state.activeTab?.url);
     await sendMsg({ type: 'CLEAR_JD' });
     state.jd = null;
+    resetJobDerivedState();
     refreshJDStatus();
-    clearAnalysisPanel();
+    refreshWorkflowStatus();
   });
 
   el('btn-gen-resume').addEventListener('click', () => generateDoc('resume'));
@@ -196,36 +333,12 @@ function bindApplicationTab() {
 // ── Re-scan ────────────────────────────────────────────────────────────────────
 async function handleRescan() {
   const btn = el('btn-rescan');
-  setBtnLoading(btn, true, '⏳ Scanning…');
-  clearAnalysisPanel();
-
   try {
-    const scrapeRes = await sendMsg({ type: 'SCRAPE_JD' });
-    if (!scrapeRes.success) { showToast(scrapeRes.error, 'error'); return; }
-    state.jd = scrapeRes.jd;
-    refreshJDStatus();
-
-    if (!getSelectedProviderKey()) {
-      showToast(`${getMissingProviderMessage()} Enable JD analysis after saving it.`, 'error');
-      return;
+    if (state.autoSync.suppressedUrl === normalizeTabUrl(state.activeTab?.url)) {
+      state.autoSync.suppressedUrl = '';
     }
-
-    setBtnLoading(btn, true, '⏳ Analysing…');
-    const metaRes = await sendMsg({
-      type:    'EXTRACT_JD_META',
-      jd:      state.jd.text,
-      profile: state.profile,
-    });
-
-    if (!metaRes.success) { showToast(metaRes.error, 'error'); return; }
-
-    if (metaRes.company) el('apply-company').value = metaRes.company;
-    if (metaRes.role)    el('apply-role').value    = metaRes.role;
-
-    renderAnalysisPanel(metaRes);
-
+    await scanAndAnalyzeJD(btn);
   } catch (e) { showToast(e.message, 'error'); }
-
   setBtnLoading(btn, false, '↻ Re-scan');
 }
 
@@ -273,25 +386,117 @@ function clearAnalysisPanel() {
   el('role-descriptions').innerHTML = '';
 }
 
+async function scanAndAnalyzeJD(button = null) {
+  snapshotActiveTab(await getActiveTab());
+  if (button) setBtnLoading(button, true, '⏳ Scanning…');
+  const previousUrl = normalizeTabUrl(state.jd?.url);
+  clearAnalysisPanel();
+
+  const scrapeRes = await sendMsg({ type: 'SCRAPE_JD' });
+  if (!scrapeRes.success) throw new Error(scrapeRes.error || 'Failed to scan the current job description.');
+
+  state.jd = scrapeRes.jd;
+  snapshotActiveTab(await getActiveTab());
+  if (previousUrl && previousUrl !== normalizeTabUrl(state.jd?.url)) resetJobDerivedState();
+  if (state.autoSync.suppressedUrl === normalizeTabUrl(state.jd?.url)) state.autoSync.suppressedUrl = '';
+  refreshJDStatus();
+  refreshWorkflowStatus();
+
+  if (!getSelectedProviderKey()) {
+    if (button) setBtnLoading(button, false, button.id === 'btn-tailor-resume' ? 'Tailor Resume For This Job' : '↻ Re-scan');
+    throw new Error(`${getMissingProviderMessage()} Save it in Settings first.`);
+  }
+
+  if (button) setBtnLoading(button, true, '⏳ Analysing…');
+  const metaRes = await sendMsg({
+    type:    'EXTRACT_JD_META',
+    jd:      state.jd.text,
+    profile: state.profile,
+  });
+
+  if (!metaRes.success) {
+    if (button) setBtnLoading(button, false, button.id === 'btn-tailor-resume' ? 'Tailor Resume For This Job' : '↻ Re-scan');
+    throw new Error(metaRes.error || 'Failed to analyze the job description.');
+  }
+
+  if (metaRes.company) el('apply-company').value = metaRes.company;
+  if (metaRes.role)    el('apply-role').value    = metaRes.role;
+
+  renderAnalysisPanel(metaRes);
+  if (button) setBtnLoading(button, false, button.id === 'btn-tailor-resume' ? 'Tailor Resume For This Job' : '↻ Re-scan');
+  return metaRes;
+}
+
+async function tailorResumeForCurrentJob() {
+  if (!profileHasContent()) {
+    openTab('profile');
+    showToast('Import your resume first so Briefly has material to tailor.', 'error');
+    return;
+  }
+  if (!getSelectedProviderKey()) {
+    openTab('settings');
+    showToast(getMissingProviderMessage(), 'error');
+    return;
+  }
+
+  const btn = el('btn-tailor-resume');
+  setBtnLoading(btn, true, '⏳ Tailoring…');
+  try {
+    await scanAndAnalyzeJD(btn);
+    await generateDoc('resume', {
+      button: btn,
+      loadingLabel: '⏳ Writing tailored resume…',
+      label: 'Tailor Resume For This Job',
+    });
+    if (!el('resume-output').classList.contains('hidden')) {
+      showToast('Tailored resume ready. Review or download the PDF below.', 'success');
+    }
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+  setBtnLoading(btn, false, 'Tailor Resume For This Job');
+}
+
 // ── Document Generation ────────────────────────────────────────────────────────
-async function generateDoc(type) {
-  if (!state.jd) return showToast('Please scan a JD first.');
+async function generateDoc(type, options = {}) {
   const isResume = type === 'resume';
   const btnId    = isResume ? 'btn-gen-resume' : 'btn-gen-cover';
   const outId    = isResume ? 'resume-output'  : 'cover-output';
   const codeId   = isResume ? 'resume-code'    : 'cover-code';
   const msgType  = isResume ? 'GENERATE_RESUME' : 'GENERATE_COVER';
-  const label    = isResume ? '⬡ Resume'        : '✉ Cover Letter';
+  const label    = options.label || (isResume ? 'Tailor Resume' : '✉ Cover Letter');
   const tplKey   = isResume ? 'resumeTemplate'  : 'coverTemplate';
 
-  const btn = el(btnId);
-  setBtnLoading(btn, true, '⏳ Generating…');
+  snapshotActiveTab(await getActiveTab());
+  refreshJDStatus();
+
+  if (!profileHasContent()) return showToast('Import your resume first so Briefly has profile data to tailor.', 'error');
+  if (!getSelectedProviderKey()) return showToast(getMissingProviderMessage(), 'error');
+
+  const btn = options.button || el(btnId);
+
+  if (!hasFreshJDForActiveTab()) {
+    if (!looksLikeJobPage(state.activeTab?.url, state.activeTab?.title)) {
+      return showToast('Open a job posting first so Briefly can tailor against the right JD.', 'error');
+    }
+    try {
+      await scanAndAnalyzeJD(btn);
+    } catch (e) {
+      setBtnLoading(btn, false, label);
+      return showToast(e.message, 'error');
+    }
+  }
+
+  if (!state.jd?.text) return showToast('Please scan a JD first.', 'error');
+
+  setBtnLoading(btn, true, options.loadingLabel || '⏳ Generating…');
   try {
     const res = await sendMsg({
       type: msgType,
       profile:       state.profile,
       jd:            state.jd.text,
       latexTemplate: state.settings[tplKey] || '',
+      personalization: shouldUsePersonalization() ? (state.settings.personalizationNotes || '') : '',
     });
     if (res.success) {
       el(codeId).textContent = res.latex;
@@ -394,16 +599,33 @@ function refreshJDStatus() {
   const statusEl  = el('jd-status');
   const statusTxt = el('jd-status-text');
   const preview   = el('jd-preview');
-  if (state.jd) {
+  const activeUrl = normalizeTabUrl(state.activeTab?.url);
+  const currentJdUrl = normalizeTabUrl(state.jd?.url);
+  const viewingJobPage = looksLikeJobPage(state.activeTab?.url, state.activeTab?.title);
+
+  if (hasFreshJDForActiveTab()) {
     statusEl.className = 'jd-status loaded';
     statusTxt.textContent = state.jd.title || state.jd.domain || 'JD loaded';
     preview.textContent = state.jd.text.slice(0, 300) + '…';
     preview.classList.remove('hidden');
+  } else if (isAutoSyncInFlightForActiveTab()) {
+    statusEl.className = 'jd-status loading';
+    statusTxt.textContent = 'Loading the job description from this page…';
+    preview.classList.add('hidden');
+  } else if (state.jd?.text && activeUrl && currentJdUrl !== activeUrl) {
+    statusEl.className = 'jd-status stale';
+    statusTxt.textContent = viewingJobPage
+      ? 'This page is different from the last scanned JD. Click Tailor Resume or wait for sync.'
+      : 'Stored JD is from a different page.';
+    preview.classList.add('hidden');
   } else {
     statusEl.className = 'jd-status empty';
-    statusTxt.textContent = 'No JD loaded — open a job posting and Re-scan';
+    statusTxt.textContent = viewingJobPage
+      ? 'Open this posting for a moment, or click Re-scan.'
+      : 'No JD loaded — open a job posting and Re-scan';
     preview.classList.add('hidden');
   }
+  refreshWorkflowStatus();
 }
 
 // ─── PROFILE TAB ─────────────────────────────────────────────────────────────
@@ -476,6 +698,7 @@ function bindProfileTab() {
         await chrome.storage.local.set({ profile: state.profile });
         renderProfileModules();
         populateProfileForm();
+        refreshWorkflowStatus();
         showFeedback(fb, '✓ Profile auto-filled! Review and save.', 'success');
       } else {
         showFeedback(fb, res.error, 'error');
@@ -725,6 +948,7 @@ async function saveProfile() {
 
   state.profile = { personal, modules };
   await chrome.storage.local.set({ profile: state.profile });
+  refreshWorkflowStatus();
   const btn = el('btn-save-profile');
   const orig = btn.textContent;
   btn.textContent = '✓ Saved!';
@@ -735,15 +959,27 @@ async function saveProfile() {
 function bindSettingsTab() {
   bindTemplateUpload('resume-tpl-upload', 'resume-tpl-name', 'resume-tpl-preview', 'resume-tpl-loaded', 'resumeTemplate');
   bindTemplateUpload('cover-tpl-upload',  'cover-tpl-name',  'cover-tpl-preview',  'cover-tpl-loaded',  'coverTemplate');
+  bindTemplateUpload('personalization-upload', 'personalization-name', 'personalization-preview', 'personalization-loaded', 'personalizationNotes');
 
   document.querySelectorAll('.btn-clear-tpl').forEach(btn => {
     btn.addEventListener('click', async () => {
       const key    = btn.dataset.tpl;
-      const prefix = key === 'resumeTemplate' ? 'resume-tpl' : 'cover-tpl';
+      const prefix =
+        key === 'resumeTemplate'
+          ? 'resume-tpl'
+          : key === 'coverTemplate'
+            ? 'cover-tpl'
+            : 'personalization';
       delete state.settings[key];
       await chrome.storage.local.set({ settings: state.settings });
-      el(`${prefix}-name`).textContent = 'Upload .tex file…';
+      if (key === 'personalizationNotes') {
+        state.settings.usePersonalization = false;
+        el(`${prefix}-name`).textContent = 'Upload personalization.md…';
+      } else {
+        el(`${prefix}-name`).textContent = 'Upload .tex file…';
+      }
       el(`${prefix}-preview`).classList.add('hidden');
+      refreshWorkflowStatus();
     });
   });
 
@@ -760,9 +996,11 @@ function bindTemplateUpload(inputId, nameId, previewId, loadedId, storageKey) {
     const file = el(inputId).files[0];
     if (!file) return;
     state.settings[storageKey] = await file.text();
-    el(nameId).textContent = 'Upload .tex file…';
+    if (storageKey === 'personalizationNotes') state.settings.usePersonalization = true;
+    el(nameId).textContent = storageKey === 'personalizationNotes' ? 'Upload personalization.md…' : 'Upload .tex file…';
     el(loadedId).textContent = `✓ ${file.name}`;
     el(previewId).classList.remove('hidden');
+    refreshWorkflowStatus();
   });
 }
 
@@ -823,8 +1061,10 @@ function populateSettingsForm() {
 
   if (s.resumeTemplate) { el('resume-tpl-loaded').textContent = '✓ resume.tex (cached)'; el('resume-tpl-preview').classList.remove('hidden'); }
   if (s.coverTemplate)  { el('cover-tpl-loaded').textContent  = '✓ cover.tex (cached)';  el('cover-tpl-preview').classList.remove('hidden'); }
+  if (s.personalizationNotes) { el('personalization-loaded').textContent = '✓ personalization.md (cached)'; el('personalization-preview').classList.remove('hidden'); }
 
   updateProviderUI();
+  refreshWorkflowStatus();
 }
 
 async function saveSettings() {
@@ -838,6 +1078,7 @@ async function saveSettings() {
     sheetsUrl:     el('s-sheets').value.trim(),
   };
   await chrome.storage.local.set({ settings: state.settings });
+  refreshWorkflowStatus();
   showFeedback(el('settings-feedback'), '✓ Settings saved', 'success');
 }
 
@@ -853,6 +1094,7 @@ function bindStorageTab() {
     refreshStorageExplorer();
     refreshJDStatus();
     clearAnalysisPanel();
+    refreshWorkflowStatus();
   });
 }
 
@@ -929,6 +1171,59 @@ function fmtBytes(b) {
   if (b < 1024) return `${b} B`;
   if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / 1048576).toFixed(2)} MB`;
+}
+
+function profileHasContent() {
+  const personalFilled = Object.values(state.profile.personal || {}).some(v => String(v || '').trim());
+  if (personalFilled) return true;
+  const modules = state.profile.modules || {};
+  return ['education', 'workExperience', 'projects', 'achievements', 'courses']
+    .some(key => Array.isArray(modules[key]) && modules[key].length > 0) ||
+    Object.values(modules.skills || {}).some(list => Array.isArray(list) && list.length > 0);
+}
+
+function hasPersonalizationNotes() {
+  return Boolean((state.settings.personalizationNotes || '').trim());
+}
+
+function shouldUsePersonalization() {
+  return hasPersonalizationNotes() && state.settings.usePersonalization !== false;
+}
+
+function refreshPersonalizationToggleState() {
+  const toggle = el('toggle-personalization');
+  const note = el('personalization-toggle-note');
+  if (!toggle || !note) return;
+
+  const available = hasPersonalizationNotes();
+  const enabled = shouldUsePersonalization();
+
+  toggle.disabled = !available;
+  toggle.checked = enabled;
+  note.textContent = available
+    ? (enabled
+      ? 'Briefly will automatically use your personalization.md while tailoring the resume.'
+      : 'Personalization notes are loaded, but they will be ignored until you turn this on.')
+    : 'Upload personalization.md in Settings to enable this.';
+}
+
+function refreshWorkflowStatus() {
+  const profileReady = profileHasContent();
+  const jdReady = hasFreshJDForActiveTab();
+  const personalizationReady = hasPersonalizationNotes();
+  const personalizationEnabled = shouldUsePersonalization();
+  const viewingJobPage = looksLikeJobPage(state.activeTab?.url, state.activeTab?.title);
+  let jdLabel = 'Open a job page';
+
+  if (jdReady) jdLabel = 'Scanned';
+  else if (isAutoSyncInFlightForActiveTab()) jdLabel = 'Updating…';
+  else if (viewingJobPage) jdLabel = 'Needs scan';
+  else if (state.jd?.text) jdLabel = 'Different page';
+
+  if (el('status-profile')) el('status-profile').textContent = profileReady ? 'Ready' : 'Import your resume';
+  if (el('status-jd-ready')) el('status-jd-ready').textContent = jdLabel;
+  if (el('status-personalization')) el('status-personalization').textContent = personalizationReady ? (personalizationEnabled ? 'On' : 'Loaded, off') : 'Optional';
+  refreshPersonalizationToggleState();
 }
 
 function escHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
